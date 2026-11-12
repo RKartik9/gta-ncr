@@ -85,6 +85,7 @@ export class Hud {
   private attribution: string;
   private toastTimer = 0;
   private lastRoad = '';
+  private miniDrawn = 0;
 
   constructor(attribution: string, onCamera: (mode: CameraMode) => void, onSwitchCar: () => void) {
     this.attribution = attribution;
@@ -188,6 +189,10 @@ export class Hud {
     this.speed.textContent = String(Math.round(kmh));
     this.gear.textContent = kmh < 1 ? 'N' : speed < 0 ? 'R' : 'D';
 
+    // the minimap turns smoothly enough at 30 frames a second, and redrawing it is not free
+    const now = performance.now();
+    if (now - this.miniDrawn < 33) return;
+    this.miniDrawn = now;
     const g = this.mini;
     const size = g.canvas.width;
     const scale = size / MINIMAP_SPAN;

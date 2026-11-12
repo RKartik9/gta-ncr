@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
-import { pickQuality, query } from './config.ts';
-import { backendName, createPipeline, createRenderer, setupShadows } from './render/renderer.ts';
+import { QUALITY_NAMES, type QualityName, pickQuality, query, saveQuality, savedQuality } from './config.ts';
+import { type Progress, clearProgress, loadProgress, saveProgress } from './save.ts';
+import { backendName, createPipeline, createRenderer, resolutionGovernor, setupShadows } from './render/renderer.ts';
 import { DayNight, onNight } from './render/sky.ts';
 import { setAnisotropy } from './render/textures.ts';
 import { type Grid, type Tile, loadJson, nearestRoad } from './world/tile.ts';
@@ -22,6 +23,8 @@ import { Hud, hideLoading, setLoading } from './hud/hud.ts';
 
 async function boot() {
   const quality = pickQuality();
+  // Saved progress, unless the address asks for a particular start (?x=&z=) or a clean one (?fresh).
+  const saved = query.has('x') || query.has('fresh') ? null : loadProgress();
   const canvas = document.getElementById('view') as HTMLCanvasElement;
 
   setLoading('Starting the renderer…', false, 0.05);
@@ -37,7 +40,8 @@ async function boot() {
   const director = new CameraDirector(canvas);
   const camera = director.camera;
   // ?time=22 starts at night; ?speed= is game hours per real second (0 freezes the clock)
-  const daynight = new DayNight(scene, renderer, Number(query.get('time') ?? 16), Number(query.get('speed') ?? 1 / 60));
+  const daynight = new DayNight(scene, renderer, Number(query.get('time') ?? saved?.hour ?? 16), Number(query.get('speed') ?? 1 / 60), quality.fog);
+  if (saved && !query.has('time')) daynight.running = saved.clockRunning;
   const sun = daynight.sun;
   scene.add(buildBasePlane(grid.bounds));
   const world = await createPhysics(grid.bounds);
@@ -47,7 +51,7 @@ async function boot() {
   const models = new Map<string, Promise<CarModel>>();
   const hud = new Hud(grid.attribution, (mode) => setCamera(mode), () => void switchCar());
   const lampLights = new LampLights(scene, [], quality.lampLights);
-  const streamer = new Streamer(grid, area, scene, world, quality.treeDensity);
+  const streamer = new Streamer(grid, area, scene, world, quality.treeDensity, quality.viewDistance);
   let booting = true, built = 0;
   streamer.onChange = (added, removed) => {
     if (added && booting) setLoading(`Building the city… ${++built} blocks of Delhi`, false, 0.18 + Math.min(0.7, built * 0.07));
@@ -69,7 +73,7 @@ async function boot() {
   };
 
   // Start on the Inner Circle, facing the way its one-way traffic runs; ?x=&z= starts anywhere on the map.
-  const startX = Number(query.get('x') ?? plaza[0] + 120), startZ = Number(query.get('z') ?? plaza[1] + 150);
+  const startX = Number(query.get('x') ?? saved?.x ?? plaza[0] + 120), startZ = Number(query.get('z') ?? saved?.z ?? plaza[1] + 150);
   setLoading('Building the city…');
   await streamer.update(startX, startZ);
   const spawnAt = (x: number, z: number) => {
@@ -77,12 +81,13 @@ async function boot() {
     const hit = nearestRoad(tiles, x, z, (r) => r.name === 'Inner Circle' && query.get('x') === null) ?? nearestRoad(tiles, x, z, isStreet) ?? nearestRoad(tiles, x, z);
     return hit ? { x: hit.x, z: hit.z, heading: hit.heading } : { x, z, heading: 0 };
   };
-  const start = spawnAt(startX, startZ);
+  // back exactly where the car was left, or on a road near the asked-for spot
+  const start = saved ? { x: saved.x, z: saved.z, heading: saved.heading } : spawnAt(startX, startZ);
   booting = false;
   if (query.has('h')) start.heading = THREE.MathUtils.degToRad(Number(query.get('h')));
 
   setLoading('Bringing the car round…', false, 0.92);
-  let carIndex = Math.max(0, CARS.findIndex((c) => c.id === query.get('car')));
+  let carIndex = Math.max(0, CARS.findIndex((c) => c.id === (query.get('car') ?? saved?.car)));
   let model = await getModel(CARS[carIndex]);
   let vehicle = new Vehicle(world, model.spec, start.x, start.z, start.heading);
   scene.add(model.group);
@@ -124,14 +129,14 @@ async function boot() {
     if (!l) carLamps.set(m, (l = addLamps(m, quality.headlightShadow)));
     return l;
   };
-  let headlights: boolean | null = null;
+  let headlights: boolean | null = saved?.headlights ?? null;
   let wasDark = false;
 
   function setCamera(mode: CameraMode) {
     director.setMode(mode);
     hud.setCamera(mode);
   }
-  const wanted = query.get('cam') as CameraMode | null;
+  const wanted = (query.get('cam') ?? saved?.camera ?? null) as CameraMode | null;
   setCamera(wanted && CAMERA_MODES.includes(wanted) ? wanted : 'chase');
 
   function resetCar() {
@@ -175,6 +180,7 @@ async function boot() {
   keys.on('KeyV', () => void switchCar());
   // GPS: the big map (M) sets a waypoint; the route is worked out over every road once all cells are in.
   const gps = new Gps(scene);
+  if (saved?.waypoint) gps.waypoint = saved.waypoint; // routed as soon as the road graph is in
   const bigmap = new BigMap(grid);
   const carPos = () => model.group.position;
   bigmap.onWaypoint = (p) => {
@@ -204,7 +210,17 @@ async function boot() {
     hud.say(daynight.running ? 'Time running' : 'Time paused');
   });
   keys.on('Escape', () => (bigmap.open ? toggleMap(false) : hud.toggleMenu()));
-  keys.onPadChange = (name) => hud.say(name ? `Controller connected: ${name}` : 'Controller disconnected');
+  keys.onPadChange = (name) => {
+    console.info(name ? `[controller] connected: ${name}` : '[controller] disconnected');
+    hud.say(name ? `Controller connected: ${name}` : 'Controller disconnected');
+  };
+  // Browsers hide controllers from plain-http pages other than localhost (a phone or PC opening the dev server by IP).
+  if (!window.isSecureContext) {
+    console.warn(`[controller] blocked: ${location.origin} is not a secure page; controllers need https:// or localhost`);
+    document.getElementById('hint')!.classList.add('warn');
+    document.getElementById('hint')!.innerHTML = `<b>Controllers are blocked on this address</b> (${location.host}). Open the game over https:// or on localhost to use one.`;
+  }
+  document.getElementById('build')!.textContent = `Build ${__BUILD__}`;
   const padReport = document.getElementById('pad-report')!;
   setInterval(() => {
     if (hud.menuOpen) padReport.textContent = keys.padReport();
@@ -240,6 +256,44 @@ async function boot() {
   let lag = 0;
   let roadTimer = 0;
   let firstFrame = true;
+
+  const governor = resolutionGovernor(renderer, quality);
+
+  // Save progress every few seconds, and whenever the tab is hidden or closed.
+  const snapshot = (): Progress => {
+    const p = model.group.position;
+    return {
+      car: model.spec.id, x: +p.x.toFixed(2), z: +p.z.toFixed(2), heading: vehicle.heading, camera: director.mode,
+      hour: daynight.hour, clockRunning: daynight.running, waypoint: gps.waypoint, headlights,
+    };
+  };
+  let saving = true;
+  const save = () => saving && saveProgress(snapshot());
+  setInterval(save, 5000);
+  document.addEventListener('visibilitychange', () => document.hidden && save());
+  window.addEventListener('pagehide', save);
+
+  // Menu: graphics quality (applied by reloading, which keeps your place) and starting over.
+  const qualityRow = document.getElementById('quality-row')!;
+  const chosen = savedQuality();
+  for (const q of ['auto', ...QUALITY_NAMES] as (QualityName | 'auto')[]) {
+    const b = document.createElement('button');
+    b.textContent = q === 'auto' ? `Auto (${quality.name})` : q[0].toUpperCase() + q.slice(1);
+    b.classList.toggle('active', q === chosen);
+    b.addEventListener('click', () => {
+      saveQuality(q);
+      save();
+      const url = new URL(location.href);
+      url.searchParams.delete('q');
+      location.replace(url);
+    });
+    qualityRow.append(b);
+  }
+  document.getElementById('start-over')!.addEventListener('click', () => {
+    saving = false;
+    clearProgress();
+    location.replace(location.pathname);
+  });
 
   renderer.setAnimationLoop((now: number) => {
     const dt = Math.min(0.1, (now - last) / 1000);
@@ -307,6 +361,7 @@ async function boot() {
     }
 
     pipeline.render();
+    governor(dt);
 
     if (firstFrame) {
       firstFrame = false;

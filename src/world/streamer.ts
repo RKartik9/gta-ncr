@@ -7,10 +7,6 @@ import { buildProps } from './props.ts';
 import { addProps } from './physics.ts';
 import { isShared } from '../util.ts';
 
-/** Cells whose nearest edge is closer than this are loaded... */
-const LOAD = 650;
-/** ...and dropped again once they are this far away. The gap stops a cell flickering in and out at a border. */
-const UNLOAD = 1300;
 
 interface Cell {
   key: string;
@@ -33,6 +29,8 @@ export class Streamer {
   tiles: Tile[] = [];
   /** called after a cell arrives or leaves */
   onChange: (added: Cell | null, removedKey: string | null) => void = () => {};
+  /** slowest time seen for each stage of building a cell, in ms: each stage runs within a single frame */
+  readonly worstMs = { fetch: 0, ground: 0, buildings: 0, props: 0, physics: 0 };
   private pending = new Set<string>();
   private queue = Promise.resolve();
   private known: Set<string>;
@@ -41,8 +39,11 @@ export class Streamer {
   private scene: THREE.Scene;
   private world: RAPIER.World;
   private treeDensity: number;
+  /** cells whose nearest edge is closer than this are loaded, and dropped again at twice it (so a cell does not flicker at a border) */
+  private viewDistance: number;
 
-  constructor(grid: Grid, dir: string, scene: THREE.Scene, world: RAPIER.World, treeDensity: number) {
+  constructor(grid: Grid, dir: string, scene: THREE.Scene, world: RAPIER.World, treeDensity: number, viewDistance: number) {
+    this.viewDistance = viewDistance;
     this.grid = grid;
     this.dir = dir;
     this.scene = scene;
@@ -64,9 +65,9 @@ export class Streamer {
 
   /** Starts loading what is near (x, z) and drops what is far. Returns when everything near is in. */
   update(x: number, z: number) {
-    for (const [key, cell] of this.cells) if (this.distance(key, x, z) > UNLOAD) this.unload(cell);
+    for (const [key, cell] of this.cells) if (this.distance(key, x, z) > this.viewDistance * 2) this.unload(cell);
     const want = [...this.known]
-      .filter((k) => !this.cells.has(k) && !this.pending.has(k) && this.distance(k, x, z) < LOAD)
+      .filter((k) => !this.cells.has(k) && !this.pending.has(k) && this.distance(k, x, z) < this.viewDistance)
       .sort((a, b) => this.distance(a, x, z) - this.distance(b, x, z));
     for (const key of want) {
       this.pending.add(key);
@@ -76,18 +77,32 @@ export class Streamer {
   }
 
   private async load(key: string) {
+    let t = performance.now();
+    const lap = (stage: keyof Streamer['worstMs']) => {
+      const now = performance.now();
+      this.worstMs[stage] = Math.max(this.worstMs[stage], Math.round(now - t));
+      t = now;
+    };
     const tile = await loadJson<Tile>(`${this.dir}/${key}`);
+    lap('fetch');
     const group = new THREE.Group();
     group.name = `cell-${key}`;
     group.add(buildGround(tile));
+    lap('ground');
     await nextFrame();
+    t = performance.now();
     const city = buildBuildings(tile, this.grid.plaza);
     group.add(city.group);
+    lap('buildings');
     await nextFrame();
+    t = performance.now();
     const props = buildProps(tile, this.grid.plaza, this.treeDensity);
     group.add(props.group);
+    lap('props');
     await nextFrame();
+    t = performance.now();
     const physics = addProps(this.world, props.solids, props.loose, city.collider);
+    lap('physics');
     const cell: Cell = { key, tile, group, physics, lampHeads: props.lampHeads };
     this.pending.delete(key);
     this.cells.set(key, cell);

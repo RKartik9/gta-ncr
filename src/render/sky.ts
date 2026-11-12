@@ -79,7 +79,7 @@ export class DayNight {
   private renderer: THREE.WebGPURenderer;
   private lastNight = -1;
 
-  constructor(scene: THREE.Scene, renderer: THREE.WebGPURenderer, hour: number, speed: number) {
+  constructor(scene: THREE.Scene, renderer: THREE.WebGPURenderer, hour: number, speed: number, fogDensity = 0.00115) {
     this.scene = scene;
     this.renderer = renderer;
     this.hour = hour;
@@ -103,7 +103,7 @@ export class DayNight {
     });
     pmrem.dispose();
 
-    this.fog = new THREE.FogExp2(HAZE.getHex(), 0.00115);
+    this.fog = new THREE.FogExp2(HAZE.getHex(), fogDensity);
     scene.fog = this.fog;
     this.hemi = new THREE.HemisphereLight(0xcfd8e6, 0x6b6253, 0.14);
     this.sun = new THREE.DirectionalLight(0xffe2bd, 4.6);

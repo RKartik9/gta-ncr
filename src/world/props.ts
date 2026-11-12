@@ -116,7 +116,9 @@ interface TreeSpot {
 function placeTrees(tile: Tile, density: number): TreeSpot[] {
   const rnd = mulberry32(2024);
   const spots: TreeSpot[] = [];
-  const boxes = tile.buildings.map((b) => {
+  // Buildings filed by 50 m square (padded by the 1.5 m clearance), so each candidate spot checks only its neighbours.
+  const buildingsAt = new Map<string, number[]>();
+  tile.buildings.forEach((b, n) => {
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (let i = 0; i < b.outer.length; i += 2) {
       minX = Math.min(minX, b.outer[i]);
@@ -124,22 +126,15 @@ function placeTrees(tile: Tile, density: number): TreeSpot[] {
       minZ = Math.min(minZ, b.outer[i + 1]);
       maxZ = Math.max(maxZ, b.outer[i + 1]);
     }
-    return { minX, maxX, minZ, maxZ, ring: b.outer };
+    fileBox(buildingsAt, minX - 1.5, minZ - 1.5, maxX + 1.5, maxZ + 1.5, n);
   });
-  const segs: number[] = [];
-  for (const r of tile.roads) {
-    for (let i = 0; i + 3 < r.pts.length; i += 2) segs.push(r.pts[i], r.pts[i + 1], r.pts[i + 2], r.pts[i + 3], r.width / 2 + 0.9);
-  }
+  const roads = roadIndex(tile);
   const blocked = (x: number, z: number) => {
-    for (const b of boxes) {
-      if (x > b.minX - 1.5 && x < b.maxX + 1.5 && z > b.minZ - 1.5 && z < b.maxZ + 1.5 && (pointInRing(x, z, b.ring) || pointInRing(x + 1.2, z, b.ring) || pointInRing(x - 1.2, z, b.ring) || pointInRing(x, z + 1.2, b.ring) || pointInRing(x, z - 1.2, b.ring))) return true;
+    for (const n of buildingsAt.get(bucketKey(x, z)) ?? []) {
+      const ring = tile.buildings[n].outer;
+      if (pointInRing(x, z, ring) || pointInRing(x + 1.2, z, ring) || pointInRing(x - 1.2, z, ring) || pointInRing(x, z + 1.2, ring) || pointInRing(x, z - 1.2, ring)) return true;
     }
-    for (let i = 0; i < segs.length; i += 5) {
-      const ax = segs[i], az = segs[i + 1], dx = segs[i + 2] - ax, dz = segs[i + 3] - az;
-      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
-      if (Math.hypot(x - ax - dx * t, z - az - dz * t) < segs[i + 4]) return true;
-    }
-    return false;
+    return roads(x, z, 0.9);
   };
   const tryAdd = (x: number, z: number, tall: boolean) => {
     // a cell's roads run on past its edge, and so do their avenue trees
@@ -375,16 +370,44 @@ export class LampLights {
 /** Signal poles stand a little off the junction node OpenStreetMap gives. */
 const signalSpots = (tile: Tile) => Array.from({ length: tile.signals.length / 2 }, (_, i): [number, number] => [tile.signals[i * 2] + 3.5, tile.signals[i * 2 + 1] + 3.5]);
 
-/** True when a point is within `margin` of any carriageway's edge (negative: that far inside it). ponytail: linear scan; grid it if tiles get big. */
-function onRoad(tile: Tile) {
+const BUCKET = 50;
+const bucketKey = (x: number, z: number) => `${Math.floor(x / BUCKET)},${Math.floor(z / BUCKET)}`;
+
+/** Files `item` under every 50 m square the box touches. */
+function fileBox(map: Map<string, number[]>, minX: number, minZ: number, maxX: number, maxZ: number, item: number) {
+  for (let bx = Math.floor(minX / BUCKET); bx <= Math.floor(maxX / BUCKET); bx++) {
+    for (let bz = Math.floor(minZ / BUCKET); bz <= Math.floor(maxZ / BUCKET); bz++) {
+      const k = `${bx},${bz}`;
+      const list = map.get(k);
+      if (list) list.push(item);
+      else map.set(k, [item]);
+    }
+  }
+}
+
+/** The widest margin anyone asks `roadIndex` about; segments are filed this far beyond their edges. */
+const ROAD_REACH = 1;
+
+/**
+ * "Is this spot within `margin` of a carriageway's edge?" (negative: that far inside it), answered from the
+ * road segments filed under the spot's 50 m square rather than every segment in the cell.
+ */
+function roadIndex(tile: Tile) {
+  const segs: number[] = [];
+  const at = new Map<string, number[]>();
+  for (const r of tile.roads) {
+    const p = r.pts, half = r.width / 2;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const n = segs.push(p[i], p[i + 1], p[i + 2], p[i + 3], half) - 5;
+      const pad = half + ROAD_REACH;
+      fileBox(at, Math.min(p[i], p[i + 2]) - pad, Math.min(p[i + 1], p[i + 3]) - pad, Math.max(p[i], p[i + 2]) + pad, Math.max(p[i + 1], p[i + 3]) + pad, n);
+    }
+  }
   return (x: number, z: number, margin: number) => {
-    for (const r of tile.roads) {
-      const p = r.pts, half = r.width / 2 + margin;
-      for (let i = 0; i + 3 < p.length; i += 2) {
-        const ax = p[i], az = p[i + 1], dx = p[i + 2] - ax, dz = p[i + 3] - az;
-        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
-        if (Math.hypot(x - ax - dx * t, z - az - dz * t) < half) return true;
-      }
+    for (const i of at.get(bucketKey(x, z)) ?? []) {
+      const ax = segs[i], az = segs[i + 1], dx = segs[i + 2] - ax, dz = segs[i + 3] - az;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+      if (Math.hypot(x - ax - dx * t, z - az - dz * t) < segs[i + 4] + margin) return true;
     }
     return false;
   };
@@ -598,7 +621,7 @@ export function buildProps(tile: Tile, plaza: [number, number], treeDensity: num
   group.name = 'props';
   const spots = placeTrees(tile, treeDensity);
   const lamps = buildLamps(tile);
-  const loose = buildLoose(tile, onRoad(tile));
+  const loose = buildLoose(tile, roadIndex(tile));
   group.add(buildTrees(spots), lamps.group, buildSignals(tile), ...loose.map((l) => l.mesh));
   if (hasFlag) group.add(buildFlag(plaza));
   const solids: Solid[] = [

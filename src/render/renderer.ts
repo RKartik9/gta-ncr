@@ -10,13 +10,40 @@ export async function createRenderer(canvas: HTMLCanvasElement, quality: Quality
   // WebGPU where the browser has it, WebGL 2 otherwise: same scene, same materials.
   const renderer = new THREE.WebGPURenderer({ canvas, antialias: false, forceWebGL, powerPreference: 'high-performance' });
   await renderer.init();
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, quality.maxPixelRatio));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, quality.pixelRatio));
   renderer.setSize(window.innerWidth, window.innerHeight, false);
   renderer.toneMapping = THREE.AgXToneMapping;
   renderer.toneMappingExposure = 1.05;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   return renderer;
+}
+
+/**
+ * Keeps the frame rate up on any machine by trading sharpness for speed: when frames run slow the picture is
+ * rendered at a lower resolution, and it creeps back up when there is headroom. Call once a frame.
+ */
+export function resolutionGovernor(renderer: THREE.WebGPURenderer, quality: Quality) {
+  const top = Math.min(window.devicePixelRatio, quality.maxPixelRatio);
+  const floor = Math.min(top, quality.minPixelRatio);
+  let ratio = renderer.getPixelRatio();
+  let avg = 1 / 60, timer = 0, holdUp = 0;
+  return (dt: number) => {
+    avg += (dt - avg) * 0.05;
+    timer += dt;
+    holdUp -= dt;
+    if (timer < 1.5) return;
+    timer = 0;
+    let next = ratio;
+    if (avg > 1 / 45) {
+      next = Math.max(floor, ratio * 0.85);
+      holdUp = 10; // after a drop, wait a while before trying higher again, or it see-saws
+    } else if (avg < 1 / 56 && holdUp <= 0) next = Math.min(top, ratio * 1.08);
+    if (Math.abs(next - ratio) > 0.01) {
+      ratio = next;
+      renderer.setPixelRatio(ratio);
+    }
+  };
 }
 
 export function backendName(renderer: THREE.WebGPURenderer) {

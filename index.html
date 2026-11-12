@@ -17,6 +17,11 @@
       #region { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); }
       #road { font-size: 24px; font-weight: 650; letter-spacing: 0.01em; margin-top: 2px; }
 
+      .choice { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; }
+      .choice button { all: unset; cursor: pointer; padding: 5px 9px; border-radius: 7px; color: var(--dim); font-size: 12px; }
+      .choice button:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
+      .choice button.active { background: var(--text); color: #101214; }
+      .note { margin: 6px 0 0; font-size: 11px; color: var(--dim); }
       #cameras { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; pointer-events: auto; }
       #cameras button, #car-switch { all: unset; cursor: pointer; padding: 5px 9px; border-radius: 7px; color: var(--dim); font-size: 12px; white-space: nowrap; }
       #cameras button kbd, #car-switch kbd { font: inherit; opacity: 0.55; margin-right: 5px; }
@@ -40,6 +45,7 @@
       #hint { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); padding: 7px 14px; color: var(--dim); font-size: 12px; white-space: nowrap; transition: opacity 1.2s; }
       #hint b { color: var(--text); }
       #hint.faded { opacity: 0; }
+      #hint.warn, #hint.warn.faded { opacity: 1; color: #ffd0a0; border-color: rgba(255, 170, 90, 0.5); }
 
       /* Esc menu: everything that is not needed while driving */
       #menu { position: fixed; inset: 0; z-index: 4; display: grid; place-items: center; background: radial-gradient(ellipse at center, rgba(8, 9, 11, 0.55), rgba(8, 9, 11, 0.85)); backdrop-filter: blur(6px) saturate(0.8); -webkit-backdrop-filter: blur(6px) saturate(0.8); opacity: 0; pointer-events: none; transition: opacity 0.25s; }
@@ -163,10 +169,13 @@
           <div><h3>Camera</h3><div id="cameras" class="panel"></div></div>
           <div><h3>Car</h3><button id="car-switch" class="panel"></button></div>
           <div><h3>Time of day</h3><div id="time-row"><input id="time-slider" type="range" min="0" max="24" step="0.05" aria-label="Time of day" /><span id="time-label">16:00</span></div></div>
+          <div><h3>Graphics</h3><div id="quality-row" class="panel choice"></div><p class="note">Lower settings run smoother. The resolution also adjusts itself to keep the frame rate up.</p></div>
+          <div><h3>Progress</h3><p class="note" style="margin-top: 0">Your place, car, clock and waypoint are saved in this browser as you play.</p><button id="start-over" class="panel" style="all: unset; cursor: pointer; padding: 6px 11px; border-radius: 7px; font-size: 12px; border: 1px solid var(--line)">Start over</button></div>
           <div><h3>Performance</h3><div id="stats" class="panel"></div></div>
-          <div><h3>Controller</h3><div id="pad-report" class="panel" style="padding: 10px 12px; font: 11px/1.6 ui-monospace, Menlo, monospace; color: var(--dim); white-space: pre-wrap; word-break: break-word">none seen yet: press any button on it</div></div>
+          <div><h3>Controller</h3><div id="pad-report" class="panel" style="padding: 10px 12px; font: 11px/1.6 ui-monospace, Menlo, monospace; color: var(--dim); white-space: pre-wrap; word-break: break-word">Checking…</div></div>
         </section>
         <div id="credit"></div>
+        <div id="build" style="grid-column: 1 / -1; font: 10px ui-monospace, Menlo, monospace; color: rgba(243,241,234,0.35)"></div>
       </div>
     </div>
 
