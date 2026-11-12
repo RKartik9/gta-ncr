@@ -28,6 +28,8 @@
 
       #minimap { position: absolute; left: 22px; bottom: 22px; width: 190px; height: 190px; border-radius: 50%; overflow: hidden; border: 2px solid rgba(255, 255, 255, 0.5); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
       #minimap canvas { width: 100%; height: 100%; display: block; }
+      #waypoint-info { position: absolute; left: 22px; bottom: 222px; padding: 5px 11px; font-size: 12px; font-weight: 600; color: #e9d2ff; opacity: 0; transition: opacity 0.3s; }
+      #waypoint-info.show { opacity: 1; }
       #minimap::after { content: "N"; position: absolute; left: 50%; top: 4px; transform: translateX(-50%); font-size: 10px; font-weight: 700; color: #fff; display: none; }
 
       #speedo { position: absolute; right: 26px; bottom: 20px; text-align: right; }
@@ -64,6 +66,21 @@
       #bar-bottom { bottom: 0; }
       body.cinematic .bar { height: 11vh; }
 
+      /* Pause map (M): the whole city, click to set a GPS waypoint */
+      #bigmap { position: fixed; inset: 0; z-index: 4; opacity: 0; pointer-events: none; transition: opacity 0.2s; background: #16181a; }
+      #bigmap.open { opacity: 1; pointer-events: auto; }
+      #bigmap canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+      #bigmap .side { position: absolute; left: 18px; top: 18px; bottom: 18px; width: 220px; padding: 16px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+      #bigmap h2 { margin: 0; font-size: 20px; font-weight: 750; }
+      #bigmap h3 { margin: 6px 0 0; font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--dim); }
+      #bigmap-route { font-size: 14px; font-weight: 650; color: #e9d2ff; }
+      #bigmap-places { display: flex; flex-direction: column; gap: 2px; }
+      #bigmap-places button { all: unset; cursor: pointer; padding: 6px 9px; border-radius: 7px; color: var(--text); font-size: 13px; }
+      #bigmap-places button:hover, #bigmap-places button:focus-visible { background: rgba(184, 77, 255, 0.25); }
+      #bigmap .help { margin-top: auto; font-size: 11.5px; line-height: 1.6; color: var(--dim); }
+      #bigmap .help b { color: var(--text); font-weight: 600; }
+      @media (max-width: 700px) { #bigmap .side { top: auto; width: auto; right: 18px; max-height: 40vh; } }
+
       /* Loading: dusk over Rajpath, the city's skyline drifting past, India Gate standing in the middle */
       #loading { position: fixed; inset: 0; z-index: 5; overflow: hidden; display: grid; place-items: center; transition: opacity 0.9s ease, transform 0.9s ease;
         background: linear-gradient(180deg, #0c1022 0%, #2a1f3d 38%, #8a3f3a 66%, #e98a3c 82%, #f4c06a 100%); }
@@ -99,11 +116,12 @@
         <div id="road">&nbsp;</div>
       </div>
       <div id="minimap"><canvas width="380" height="380"></canvas></div>
+      <div id="waypoint-info" class="panel"></div>
       <div id="speedo">
         <div><span id="gear">N</span><span id="speed">0</span></div>
         <div id="speed-unit">KM/H</div>
       </div>
-      <div id="hint" class="panel"><b>W A S D</b> drive &nbsp;·&nbsp; <b>drag</b> to look &nbsp;·&nbsp; <b>Esc</b> / <b>Menu</b> button: controls &amp; info · controllers work too</div>
+      <div id="hint" class="panel"><b>W A S D</b> drive &nbsp;·&nbsp; <b>drag</b> to look &nbsp;·&nbsp; <b>M</b> map &amp; waypoint &nbsp;·&nbsp; <b>Esc</b> / <b>Menu</b> button: controls &amp; info · controllers work too</div>
       <div id="toast" class="panel"></div>
     </div>
 
@@ -122,6 +140,7 @@
             <kbd>N</kbd><span>jump between day and night</span>
             <kbd>T</kbd><span>pause or run the clock</span>
             <kbd>L</kbd><span>headlights</span>
+            <kbd>M</kbd><span>map: click to set a GPS waypoint</span>
             <kbd>H</kbd><span>horn</span>
             <kbd>Esc</kbd><span>this menu</span>
           </div>
@@ -137,6 +156,7 @@
             <kbd>LB · RB</kbd><span>switch car · headlights</span>
             <kbd>View · Menu</kbd><span>day and night · this menu</span>
             <kbd>D-pad up</kbd><span>pause or run the clock</span>
+            <kbd>D-pad down</kbd><span>map and waypoint</span>
           </div>
         </section>
         <section style="display: grid; gap: 18px; align-content: start">
@@ -147,6 +167,20 @@
           <div><h3>Controller</h3><div id="pad-report" class="panel" style="padding: 10px 12px; font: 11px/1.6 ui-monospace, Menlo, monospace; color: var(--dim); white-space: pre-wrap; word-break: break-word">none seen yet: press any button on it</div></div>
         </section>
         <div id="credit"></div>
+      </div>
+    </div>
+
+    <div id="bigmap" aria-hidden="true">
+      <canvas></canvas>
+      <div class="side panel">
+        <h2>Map</h2>
+        <div id="bigmap-route">No waypoint set</div>
+        <h3>Set a waypoint at</h3>
+        <div id="bigmap-places"></div>
+        <div class="help">
+          <b>Click</b> the map: set a waypoint<br /><b>Right-click</b>: clear it<br /><b>Drag · wheel</b>: pan · zoom<br /><b>M</b> or <b>Esc</b>: back to the car<br />
+          Controller: <b>left stick</b> pan, <b>RT/LT</b> zoom, <b>A</b> set, <b>X</b> clear, <b>B</b> back
+        </div>
       </div>
     </div>
 

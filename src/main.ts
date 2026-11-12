@@ -3,7 +3,10 @@ import { pickQuality, query } from './config.ts';
 import { backendName, createPipeline, createRenderer, setupShadows } from './render/renderer.ts';
 import { DayNight, onNight } from './render/sky.ts';
 import { setAnisotropy } from './render/textures.ts';
-import { type Grid, loadJson, nearestRoad } from './world/tile.ts';
+import { type Grid, type Tile, loadJson, nearestRoad } from './world/tile.ts';
+import { RoadGraph } from './world/route.ts';
+import { Gps } from './world/gps.ts';
+import { BigMap } from './hud/bigmap.ts';
 import { buildBasePlane, isMajor, isStreet } from './world/ground.ts';
 import { LampLights } from './world/props.ts';
 import { STEP, createPhysics } from './world/physics.ts';
@@ -170,8 +173,27 @@ async function boot() {
   });
   CAMERA_MODES.forEach((mode, i) => keys.on(`Digit${i + 1}`, () => setCamera(mode)));
   keys.on('KeyV', () => void switchCar());
-  keys.on('KeyR', resetCar);
-  keys.on('KeyH', horn);
+  // GPS: the big map (M) sets a waypoint; the route is worked out over every road once all cells are in.
+  const gps = new Gps(scene);
+  const bigmap = new BigMap(grid);
+  const carPos = () => model.group.position;
+  bigmap.onWaypoint = (p) => {
+    gps.set(p, carPos());
+    hud.say(p ? (gps.ready ? 'Waypoint set' : 'Waypoint set: working out the route…') : 'Waypoint cleared');
+  };
+  void Promise.all(grid.cells.map((k) => loadJson<Tile>(`${area}/${k}`))).then((all) => {
+    gps.setGraph(new RoadGraph(all.flatMap((t) => t.roads)), carPos());
+    bigmap.setTiles(all);
+  });
+  const toggleMap = (open = !bigmap.open) => {
+    if (open) hud.toggleMenu(false);
+    bigmap.toggle(open, carPos());
+  };
+  keys.on('KeyM', () => toggleMap());
+  // on the map, the controller's face buttons work the waypoint instead of the car
+  keys.on('PadA', () => bigmap.open && bigmap.pickCentre());
+  keys.on('KeyR', () => (bigmap.open ? toggleMap(false) : resetCar()));
+  keys.on('KeyH', () => (bigmap.open ? bigmap.onWaypoint(null) : horn()));
   keys.on('KeyN', () => {
     daynight.toggle();
     headlights = null;
@@ -181,7 +203,7 @@ async function boot() {
     daynight.running = !daynight.running;
     hud.say(daynight.running ? 'Time running' : 'Time paused');
   });
-  keys.on('Escape', () => hud.toggleMenu());
+  keys.on('Escape', () => (bigmap.open ? toggleMap(false) : hud.toggleMenu()));
   keys.onPadChange = (name) => hud.say(name ? `Controller connected: ${name}` : 'Controller disconnected');
   const padReport = document.getElementById('pad-report')!;
   setInterval(() => {
@@ -227,7 +249,9 @@ async function boot() {
     // right stick looks round, at about the speed of a brisk mouse drag
     if (keys.look.x || keys.look.y) director.turn(keys.look.x * dt * 700, keys.look.y * dt * 500);
     const speedBefore = vehicle.speed;
-    lag += hud.menuOpen ? 0 : dt; // the Esc menu pauses the game
+    const paused = hud.menuOpen || bigmap.open;
+    lag += paused ? 0 : dt; // the Esc menu and the map pause the game
+    if (bigmap.open) bigmap.steer(dt, keys.raw.x, keys.raw.y, keys.raw.rt, keys.raw.lt);
     let steps = 0;
     while (lag >= STEP && steps < 5) {
       previous.p.copy(current.p);
@@ -256,7 +280,10 @@ async function boot() {
     });
     model.setBraking(vehicle.braking);
 
-    daynight.update(hud.menuOpen ? 0 : dt);
+    daynight.update(paused ? 0 : dt);
+    if (gps.update(paused ? 0 : dt, model.group.position)) hud.say('You have arrived');
+    hud.setWaypointDistance(gps.waypoint ? gps.length : null);
+    if (bigmap.open) bigmap.render(model.group.position, vehicle.heading, gps.route, gps.waypoint, gps.length);
     const dark = daynight.night > 0.5;
     if (dark !== wasDark) {
       wasDark = dark;
@@ -267,7 +294,7 @@ async function boot() {
 
     director.update(dt, model.group, vehicle, spec);
     shadows.follow(model.group.position);
-    hud.update(vehicle.speed, model.group.position.x, model.group.position.z, vehicle.heading);
+    hud.update(vehicle.speed, model.group.position.x, model.group.position.z, vehicle.heading, gps.route, gps.waypoint);
 
     roadTimer -= dt;
     if (roadTimer <= 0) {
@@ -318,6 +345,9 @@ async function boot() {
       },
       setCamera,
       daynight,
+      gps,
+      waypoint: (x: number, z: number) => bigmap.onWaypoint([x, z]),
+      toggleMap,
       switchCar,
       place: (x: number, z: number, headingDeg: number) => {
         void streamer.update(x, z);

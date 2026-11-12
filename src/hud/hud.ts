@@ -16,18 +16,26 @@ interface MapPiece {
   minZ: number;
 }
 
-function drawMap(tile: Tile): MapPiece {
-  const { maxX, maxZ } = tile.bounds;
-  const minX = tile.bounds.minX - MAP_PAD, minZ = tile.bounds.minZ - MAP_PAD;
+interface Rect {
+  minX: number;
+  minZ: number;
+  maxX: number;
+  maxZ: number;
+}
+
+/**
+ * Paints map tiles (parks, buildings, roads) onto a canvas covering `area` at `scale` pixels a metre.
+ * The dark ground goes only under `ground`, so a padded piece never paints over its neighbours.
+ */
+export function drawTiles(tiles: Tile[], area: Rect, scale: number, ground: Rect = area) {
   const c = document.createElement('canvas');
-  c.width = Math.ceil((maxX + MAP_PAD - minX) * MAP_SCALE);
-  c.height = Math.ceil((maxZ + MAP_PAD - minZ) * MAP_SCALE);
+  c.width = Math.ceil((area.maxX - area.minX) * scale);
+  c.height = Math.ceil((area.maxZ - area.minZ) * scale);
   const g = c.getContext('2d')!;
-  g.scale(MAP_SCALE, MAP_SCALE);
-  g.translate(-minX, -minZ);
-  // background only under the cell itself, so the padding never paints over a neighbour
+  g.scale(scale, scale);
+  g.translate(-area.minX, -area.minZ);
   g.fillStyle = '#2a2d2f';
-  g.fillRect(tile.bounds.minX, tile.bounds.minZ, maxX - tile.bounds.minX, maxZ - tile.bounds.minZ);
+  g.fillRect(ground.minX, ground.minZ, ground.maxX - ground.minX, ground.maxZ - ground.minZ);
   const fill = (ring: number[], colour: string) => {
     g.beginPath();
     for (let i = 0; i < ring.length; i += 2) g.lineTo(ring[i], ring[i + 1]);
@@ -35,22 +43,33 @@ function drawMap(tile: Tile): MapPiece {
     g.fillStyle = colour;
     g.fill();
   };
-  for (const a of tile.areas) fill(a.outer, a.kind === 'water' ? '#3f6f8f' : '#35553a');
-  for (const b of tile.buildings) fill(b.outer, '#43474a');
+  for (const t of tiles) for (const a of t.areas) fill(a.outer, a.kind === 'water' ? '#3f6f8f' : '#35553a');
+  for (const t of tiles) for (const b of t.buildings) fill(b.outer, '#43474a');
   g.lineCap = g.lineJoin = 'round';
-  // minor roads first, so the main roads read on top
+  // minor roads first, so the main roads read on top; never thinner than a pixel and a half
   for (const major of [false, true]) {
-    for (const r of tile.roads) {
-      if ((r.width >= 8) !== major) continue;
-      g.beginPath();
-      for (let i = 0; i < r.pts.length; i += 2) g.lineTo(r.pts[i], r.pts[i + 1]);
-      g.strokeStyle = major ? '#e6e2d6' : '#8d9093';
-      g.lineWidth = Math.max(r.width, 4);
-      g.stroke();
+    for (const t of tiles) {
+      for (const r of t.roads) {
+        if ((r.width >= 8) !== major) continue;
+        g.beginPath();
+        for (let i = 0; i < r.pts.length; i += 2) g.lineTo(r.pts[i], r.pts[i + 1]);
+        g.strokeStyle = major ? '#e6e2d6' : '#8d9093';
+        g.lineWidth = Math.max(r.width, 4, 1.5 / scale);
+        g.stroke();
+      }
     }
   }
-  return { canvas: c, minX, minZ };
+  return c;
 }
+
+function drawMap(tile: Tile): MapPiece {
+  const b = tile.bounds;
+  const area = { minX: b.minX - MAP_PAD, minZ: b.minZ - MAP_PAD, maxX: b.maxX + MAP_PAD, maxZ: b.maxZ + MAP_PAD };
+  return { canvas: drawTiles([tile], area, MAP_SCALE, b), minX: area.minX, minZ: area.minZ };
+}
+
+/** The GPS colour, as in the classic open-world games. */
+export const ROUTE_COLOUR = '#b84dff';
 
 export class Hud {
   private speed = $('speed');
@@ -157,7 +176,14 @@ export class Hud {
     this.stats.innerHTML = html;
   }
 
-  update(speed: number, x: number, z: number, heading: number) {
+  private waypointInfo = $('waypoint-info');
+  /** Distance left to the waypoint, under the minimap; null hides it. */
+  setWaypointDistance(metres: number | null) {
+    this.waypointInfo.classList.toggle('show', metres !== null);
+    if (metres !== null) this.waypointInfo.textContent = `◆ Waypoint · ${metres < 1000 ? `${Math.round(metres / 10) * 10} m` : `${(metres / 1000).toFixed(1)} km`}`;
+  }
+
+  update(speed: number, x: number, z: number, heading: number, route: number[] | null = null, waypoint: [number, number] | null = null) {
     const kmh = Math.abs(speed) * 3.6;
     this.speed.textContent = String(Math.round(kmh));
     this.gear.textContent = kmh < 1 ? 'N' : speed < 0 ? 'R' : 'D';
@@ -176,6 +202,36 @@ export class Hud {
       // only the pieces near enough to show
       if (Math.abs(m.minX + m.canvas.width / MAP_SCALE / 2 - x) > 1200 || Math.abs(m.minZ + m.canvas.height / MAP_SCALE / 2 - z) > 1200) continue;
       g.drawImage(m.canvas, (m.minX - x) * MAP_SCALE, (m.minZ - z) * MAP_SCALE);
+    }
+    if (route) {
+      g.beginPath();
+      for (let i = 0; i < route.length; i += 2) g.lineTo((route[i] - x) * MAP_SCALE, (route[i + 1] - z) * MAP_SCALE);
+      g.lineCap = g.lineJoin = 'round';
+      g.strokeStyle = ROUTE_COLOUR;
+      g.lineWidth = 6 * MAP_SCALE;
+      g.stroke();
+    }
+    if (waypoint) {
+      // the marker sits on the rim, pointing the way, when the waypoint is off the minimap
+      const a = heading - Math.PI, dx = (waypoint[0] - x) * scale, dz = (waypoint[1] - z) * scale;
+      let px = size / 2 + dx * Math.cos(a) - dz * Math.sin(a), pz = size * 0.6 + dx * Math.sin(a) + dz * Math.cos(a);
+      const ox = px - size / 2, oz = pz - size / 2, r = Math.hypot(ox, oz), rim = size / 2 - 16;
+      if (r > rim) {
+        px = size / 2 + (ox / r) * rim;
+        pz = size / 2 + (oz / r) * rim;
+      }
+      g.setTransform(1, 0, 0, 1, px, pz);
+      g.beginPath();
+      g.moveTo(0, -12);
+      g.lineTo(10, 0);
+      g.lineTo(0, 12);
+      g.lineTo(-10, 0);
+      g.closePath();
+      g.fillStyle = ROUTE_COLOUR;
+      g.strokeStyle = '#fff';
+      g.lineWidth = 3;
+      g.stroke();
+      g.fill();
     }
     g.setTransform(1, 0, 0, 1, size / 2, size * 0.6);
     g.beginPath();

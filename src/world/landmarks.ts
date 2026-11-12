@@ -8,7 +8,7 @@ const INDIA_GATE = { x: 1251.6, z: 2069.2 };
 const CANOPY = { x: 1407, z: 2070 };
 
 /** Neighbourhoods for the place label, in map metres; the nearest one within reach names where the car is. */
-const NEIGHBOURHOODS: [string, number, number][] = [
+export const NEIGHBOURHOODS: [string, number, number][] = [
   ['Connaught Place', 290, -147],
   ['Janpath', 225, 891],
   ['Barakhamba Road', 801, 200],

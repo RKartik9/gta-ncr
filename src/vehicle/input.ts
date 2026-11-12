@@ -15,6 +15,8 @@ const PAD_BUTTONS: Record<number, string> = {
   8: 'KeyN', // View [Share]: day / night
   9: 'Escape', // Menu [Options]: pause menu
   12: 'KeyT', // d-pad up: pause or run the clock
+  13: 'KeyM', // d-pad down: map
+  0: 'PadA', // A [cross]: also the handbrake while driving; on the map, set the waypoint
 };
 const HANDBRAKE = 0; // A [cross], held
 const RT = 7, LT = 6;
@@ -32,6 +34,8 @@ export class Keyboard {
   private pad = { throttle: 0, steer: 0, handbrake: false };
   /** right stick, -1..1, for looking round */
   look = { x: 0, y: 0 };
+  /** left stick and triggers as they are, for the map */
+  raw = { x: 0, y: 0, rt: 0, lt: 0 };
   /** called with the controller's name when one is plugged in, or null when it goes */
   onPadChange: (name: string | null) => void = () => {};
 
@@ -112,6 +116,7 @@ export class Keyboard {
     this.pad.throttle = trigger(RT) - trigger(LT);
     this.pad.steer = -stick(gp.axes[0] ?? 0) || dpad(14) - dpad(15);
     this.pad.handbrake = !!b(HANDBRAKE)?.pressed;
+    this.raw = { x: stick(gp.axes[0] ?? 0), y: stick(gp.axes[1] ?? 0), rt: trigger(RT), lt: trigger(LT) };
     this.look.x = stick(gp.axes[2] ?? 0);
     this.look.y = stick(gp.axes[3] ?? 0);
   }
