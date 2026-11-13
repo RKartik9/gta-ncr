@@ -107,6 +107,28 @@ export class Hud {
     });
     setTimeout(() => $('hint').classList.add('faded'), 12000);
     $('resume').addEventListener('click', () => this.toggleMenu(false));
+    // menu tabs: one section showing at a time; arrow keys move along the tab list as well
+    const tabs = [...document.querySelectorAll<HTMLButtonElement>('#menu [role="tab"]')];
+    const select = (tab: HTMLButtonElement) => {
+      for (const t of tabs) {
+        const on = t === tab;
+        t.setAttribute('aria-selected', String(on));
+        t.tabIndex = on ? 0 : -1;
+        $(t.getAttribute('aria-controls')!).hidden = !on;
+      }
+    };
+    tabs.forEach((t, i) => {
+      t.addEventListener('click', () => select(t));
+      t.addEventListener('keydown', (e) => {
+        const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+        if (!step) return;
+        e.stopPropagation(); // not steering the (paused) car
+        const next = tabs[(i + step + tabs.length) % tabs.length];
+        select(next);
+        next.focus();
+      });
+    });
+    select(tabs[0]);
   }
 
   private menu = $('menu');
@@ -142,7 +164,7 @@ export class Hud {
 
   setCar(name: string, credit: string) {
     this.carSwitch.innerHTML = `<kbd>V</kbd>${name}`;
-    this.credit.textContent = `Map data ${this.attribution}. ${credit ? `Car model: ${credit}.` : ''}`;
+    this.credit.textContent = `Map data ${this.attribution}. ${credit ? `Car model: ${credit}. ` : ''}Engine sound: "Car Engine Loop" by qubodup (opengameart.org), CC BY 3.0. Other sounds CC0 from freesound.org.`;
   }
 
   private region = $('region');

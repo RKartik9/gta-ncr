@@ -42,6 +42,8 @@ export class Keyboard {
   constructor() {
     window.addEventListener('keydown', (e) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // typing in a menu box (the music link) is not driving; Esc still closes the menu
+      if (e.target instanceof HTMLInputElement && e.target.type === 'text' && e.code !== 'Escape') return;
       if (DRIVE_KEYS.has(e.code) || this.handlers.has(e.code)) e.preventDefault();
       if (!e.repeat) this.handlers.get(e.code)?.();
       this.down.add(e.code);
@@ -53,6 +55,7 @@ export class Keyboard {
     window.addEventListener('gamepaddisconnected', (e) => {
       if (e.gamepad.index !== this.padIndex) return;
       this.padIndex = null;
+      this.padWas = [];
       this.pad = { throttle: 0, steer: 0, handbrake: false };
       this.look = { x: 0, y: 0 };
       this.onPadChange(null);
@@ -61,6 +64,13 @@ export class Keyboard {
 
   on(code: string, handler: () => void) {
     this.handlers.set(code, handler);
+  }
+
+  /** Key held right now, or the controller button mapped to it. */
+  held(code: string) {
+    if (this.down.has(code)) return true;
+    for (const i in PAD_BUTTONS) if (PAD_BUTTONS[i] === code && this.padWas[i]) return true;
+    return false;
   }
 
   private adopt(gp: Gamepad) {

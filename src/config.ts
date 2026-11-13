@@ -29,19 +29,19 @@ export interface Quality {
 const PRESETS: Record<QualityName, Quality> = {
   low: {
     name: 'low', pixelRatio: 0.75, minPixelRatio: 0.5, maxPixelRatio: 1, shadowCascades: 1, shadowMapSize: 1024, shadowFar: 80,
-    ambientOcclusion: false, bloom: false, msaa: 0, treeDensity: 0.35, anisotropy: 2, lampLights: 0, headlightShadow: false, viewDistance: 380, fog: 0.0024,
+    ambientOcclusion: false, bloom: false, msaa: 0, treeDensity: 0.35, anisotropy: 2, lampLights: 2, headlightShadow: false, viewDistance: 380, fog: 0.0018,
   },
   medium: {
     name: 'medium', pixelRatio: 1, minPixelRatio: 0.6, maxPixelRatio: 1.25, shadowCascades: 1, shadowMapSize: 2048, shadowFar: 140,
-    ambientOcclusion: false, bloom: true, msaa: 0, treeDensity: 0.6, anisotropy: 4, lampLights: 2, headlightShadow: false, viewDistance: 480, fog: 0.0017,
+    ambientOcclusion: false, bloom: true, msaa: 0, treeDensity: 0.6, anisotropy: 4, lampLights: 4, headlightShadow: false, viewDistance: 480, fog: 0.0013,
   },
   high: {
     name: 'high', pixelRatio: 1.25, minPixelRatio: 0.75, maxPixelRatio: 1.5, shadowCascades: 2, shadowMapSize: 2048, shadowFar: 220,
-    ambientOcclusion: false, bloom: true, msaa: 4, treeDensity: 0.85, anisotropy: 8, lampLights: 4, headlightShadow: false, viewDistance: 600, fog: 0.0013,
+    ambientOcclusion: false, bloom: true, msaa: 4, treeDensity: 0.85, anisotropy: 8, lampLights: 6, headlightShadow: false, viewDistance: 600, fog: 0.001,
   },
   ultra: {
     name: 'ultra', pixelRatio: 2, minPixelRatio: 1, maxPixelRatio: 2, shadowCascades: 3, shadowMapSize: 2048, shadowFar: 320,
-    ambientOcclusion: true, bloom: true, msaa: 4, treeDensity: 1, anisotropy: 16, lampLights: 12, headlightShadow: true, viewDistance: 650, fog: 0.00115,
+    ambientOcclusion: true, bloom: true, msaa: 4, treeDensity: 1, anisotropy: 16, lampLights: 12, headlightShadow: true, viewDistance: 650, fog: 0.0009,
   },
 };
 
@@ -57,7 +57,8 @@ function autoQuality(): QualityName {
   const cores = navigator.hardwareConcurrency || 4;
   const memory = nav.deviceMemory ?? 8;
   if (touch || memory <= 4 || cores <= 4) return 'low';
-  if (!('gpu' in navigator) || cores < 8) return 'medium';
+  // high (4x MSAA, two shadow cascades) only on big machines; 8-core laptops lagged on it
+  if (!('gpu' in navigator) || cores <= 8) return 'medium';
   return 'high';
 }
 

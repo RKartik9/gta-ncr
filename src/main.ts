@@ -14,12 +14,14 @@ import { STEP, createPhysics } from './world/physics.ts';
 import { Streamer } from './world/streamer.ts';
 import { buildLandmarks, neighbourhood } from './world/landmarks.ts';
 import { CARS, type CarSpec, axleHeight, restLength } from './vehicle/cars.ts';
-import { type CarModel, addLamps, buildHatchback } from './vehicle/carModel.ts';
+import { CarLamps, type CarModel, buildHatchback } from './vehicle/carModel.ts';
 import { loadGltfCar } from './vehicle/gltfCar.ts';
 import { Vehicle } from './vehicle/vehicle.ts';
 import { Keyboard } from './vehicle/input.ts';
 import { CAMERA_MODES, CameraDirector, type CameraMode } from './camera/director.ts';
 import { Hud, hideLoading, setLoading } from './hud/hud.ts';
+import { Sound } from './audio/sound.ts';
+import { Music } from './audio/music.ts';
 
 async function boot() {
   const quality = pickQuality();
@@ -92,13 +94,15 @@ async function boot() {
   let vehicle = new Vehicle(world, model.spec, start.x, start.z, start.heading);
   scene.add(model.group);
   hud.setCar(model.spec.name, model.spec.credit ?? '');
-  for (const spec of CARS) void getModel(spec);
 
   let switching = false;
   async function switchCar() {
     if (switching) return;
     switching = true;
     const next = (carIndex + 1) % CARS.length;
+    // Say so straight away: the model may still be loading, and its shaders are readied before the swap, so the
+    // game keeps running (and the toast shows) instead of stalling on the first frame with the new car.
+    hud.say(`Bringing the ${CARS[next].name} round…`);
     const incoming = await getModel(CARS[next]);
     const p = vehicle.body.translation();
     const heading = vehicle.heading;
@@ -108,12 +112,14 @@ async function boot() {
     model = incoming;
     vehicle = new Vehicle(world, model.spec, p.x, p.z, heading);
     scene.add(model.group);
+    carLamps.attach(model);
     readPose(current);
     previous.p.copy(current.p);
     previous.q.copy(current.q);
     director.cut();
     hud.setCar(model.spec.name, model.spec.credit ?? '');
     hud.say(model.spec.name);
+    sound.setCar(model.spec);
     switching = false;
   }
 
@@ -123,12 +129,8 @@ async function boot() {
   onNight(setNight);
 
   // Headlights: on by themselves after dusk; L overrides until the next dusk or dawn.
-  const carLamps = new Map<CarModel, ReturnType<typeof addLamps>>();
-  const lampsOf = (m: CarModel) => {
-    let l = carLamps.get(m);
-    if (!l) carLamps.set(m, (l = addLamps(m, quality.headlightShadow)));
-    return l;
-  };
+  const carLamps = new CarLamps(quality.headlightShadow);
+  carLamps.attach(model);
   let headlights: boolean | null = saved?.headlights ?? null;
   let wasDark = false;
 
@@ -152,24 +154,10 @@ async function boot() {
     director.cut();
   }
 
-  let audio: AudioContext | null = null;
-  function horn() {
-    audio ??= new AudioContext();
-    const gain = audio.createGain();
-    gain.gain.setValueAtTime(0.0001, audio.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.16, audio.currentTime + 0.02);
-    gain.gain.setValueAtTime(0.16, audio.currentTime + 0.32);
-    gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.42);
-    gain.connect(audio.destination);
-    for (const f of [415, 520]) {
-      const osc = audio.createOscillator();
-      osc.type = 'sawtooth';
-      osc.frequency.value = f;
-      osc.connect(gain);
-      osc.start();
-      osc.stop(audio.currentTime + 0.45);
-    }
-  }
+  const sound = new Sound();
+  sound.setCar(model.spec);
+  const music = new Music();
+  music.resumeOnGesture();
 
   const keys = new Keyboard();
   keys.on('KeyC', () => {
@@ -199,7 +187,7 @@ async function boot() {
   // on the map, the controller's face buttons work the waypoint instead of the car
   keys.on('PadA', () => bigmap.open && bigmap.pickCentre());
   keys.on('KeyR', () => (bigmap.open ? toggleMap(false) : resetCar()));
-  keys.on('KeyH', () => (bigmap.open ? bigmap.onWaypoint(null) : horn()));
+  keys.on('KeyH', () => bigmap.open && bigmap.onWaypoint(null)); // held: the horn, read each frame
   keys.on('KeyN', () => {
     daynight.toggle();
     headlights = null;
@@ -230,7 +218,7 @@ async function boot() {
     headlights = null;
   });
   keys.on('KeyL', () => {
-    headlights = !lampsOf(model).on;
+    headlights = !carLamps.on;
     hud.say(headlights ? 'Headlights on' : 'Headlights off');
   });
 
@@ -295,6 +283,55 @@ async function boot() {
     location.replace(location.pathname);
   });
 
+  // Menu: music from a YouTube link, and the effects volume.
+  const musicUrl = document.getElementById('music-url') as HTMLInputElement;
+  const musicStatus = document.getElementById('music-status')!;
+  const musicVolume = document.getElementById('music-volume') as HTMLInputElement;
+  const sfxVolume = document.getElementById('sfx-volume') as HTMLInputElement;
+  musicUrl.value = music.url;
+  musicVolume.value = String(music.volume);
+  sfxVolume.value = String(Math.round(sound.volume * 100));
+  music.onStatus = (t) => (musicStatus.textContent = t);
+  document.getElementById('music-form')!.addEventListener('submit', (e) => {
+    e.preventDefault();
+    musicUrl.blur();
+    void music.play(musicUrl.value);
+  });
+  document.getElementById('music-stop')!.addEventListener('click', () => music.stop());
+  musicVolume.addEventListener('input', () => music.setVolume(Number(musicVolume.value)));
+  sfxVolume.addEventListener('input', () => sound.setVolume(Number(sfxVolume.value) / 100));
+
+  // Every car drawn once with its lights off and once with them on, behind the loading screen. The first draw of
+  // each builds its shaders (half a second or more); done here, switching car or lights later never freezes.
+  setLoading('Getting the cars ready…', false, 0.96);
+  {
+    const here = model;
+    const ahead = new THREE.Vector3();
+    camera.getWorldDirection(ahead);
+    for (const spec of CARS) {
+      const m = await getModel(spec);
+      scene.remove(model.group);
+      scene.add(m.group);
+      m.group.position.copy(camera.position).addScaledVector(ahead, 10);
+      const culled: THREE.Object3D[] = [];
+      m.group.traverse((o) => o.frustumCulled && culled.push(o));
+      for (const o of culled) o.frustumCulled = false; // drawn in every pass, shadows included, wherever it is
+      model = m;
+      carLamps.attach(m);
+      for (const on of [false, true]) {
+        carLamps.set(on, on);
+        pipeline.render();
+        await new Promise(requestAnimationFrame);
+      }
+      for (const o of culled) o.frustumCulled = true;
+    }
+    scene.remove(model.group);
+    model = here;
+    scene.add(model.group);
+    carLamps.attach(model);
+    carLamps.set(false, false);
+  }
+
   renderer.setAnimationLoop((now: number) => {
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
@@ -306,11 +343,12 @@ async function boot() {
     const paused = hud.menuOpen || bigmap.open;
     lag += paused ? 0 : dt; // the Esc menu and the map pause the game
     if (bigmap.open) bigmap.steer(dt, keys.raw.x, keys.raw.y, keys.raw.rt, keys.raw.lt);
+    const input = keys.drive();
     let steps = 0;
     while (lag >= STEP && steps < 5) {
       previous.p.copy(current.p);
       previous.q.copy(current.q);
-      vehicle.update(keys.drive(), STEP);
+      vehicle.update(input, STEP);
       world.step();
       readPose(current);
       lag -= STEP;
@@ -319,7 +357,14 @@ async function boot() {
     if (steps === 5) lag = 0;
     // a sudden loss of speed is a hit: shake the controller in proportion
     const jolt = Math.abs(vehicle.speed - speedBefore);
-    if (steps && jolt > 2.5) keys.rumble(jolt / 12, 120 + jolt * 15);
+    if (steps && jolt > 2.5) {
+      keys.rumble(jolt / 12, 120 + jolt * 15);
+      sound.crash(jolt);
+    }
+    sound.setPaused(paused);
+    sound.setHorn(!bigmap.open && keys.held('KeyH'));
+    const v = vehicle.body.linvel(), h = vehicle.heading;
+    sound.update(dt, vehicle.speed, input.throttle, Math.abs(v.x * Math.cos(h) - v.z * Math.sin(h)), vehicle.braking);
     streamer.sync();
     const blend = lag / STEP;
     model.group.position.lerpVectors(previous.p, current.p, blend);
@@ -343,7 +388,7 @@ async function boot() {
       wasDark = dark;
       headlights = null;
     }
-    lampsOf(model).set(headlights ?? dark, vehicle.braking);
+    carLamps.set(headlights ?? dark, vehicle.braking);
     lampLights.update(dt, model.group.position);
 
     director.update(dt, model.group, vehicle, spec);
@@ -352,7 +397,7 @@ async function boot() {
 
     roadTimer -= dt;
     if (roadTimer <= 0) {
-      roadTimer = 0.3;
+      roadTimer = 0.6;
       const p = model.group.position;
       const hit = nearestRoad(streamer.tiles, p.x, p.z, (r) => !!r.name && (isMajor(r) || isStreet(r)));
       void streamer.update(p.x, p.z);

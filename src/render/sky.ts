@@ -1,9 +1,10 @@
 import * as THREE from 'three/webgpu';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
+import { pmremTexture } from 'three/tsl';
 
-// Delhi haze by day, a warm dusk, and a blue-black night lit by sodium lamps.
+// A clear blue day with a light haze at the horizon, a warm dusk, and a blue-black night lit by sodium lamps.
 const SUN_PEAK = 52; // degrees above the horizon at noon
-const HAZE = new THREE.Color(0xc3bcae);
+const HAZE = new THREE.Color(0xb4c6d8); // the horizon's own blue, so distance reads as air rather than smog
 const DUSK = new THREE.Color(0x9a7f6c);
 const NIGHT = new THREE.Color(0x141a24);
 const SUN_LOW = new THREE.Color(0xff9a5a);
@@ -21,9 +22,9 @@ export function sunAt(hour: number, out = new THREE.Vector3()) {
 function makeSky(showSun: boolean) {
   const sky = new SkyMesh();
   sky.scale.setScalar(10000);
-  sky.turbidity.value = 9;
-  sky.rayleigh.value = 1.5;
-  sky.mieCoefficient.value = 0.012;
+  sky.turbidity.value = 3.5;
+  sky.rayleigh.value = 1.8;
+  sky.mieCoefficient.value = 0.004;
   sky.mieDirectionalG.value = 0.82;
   sky.cloudCoverage.value = 0.28;
   sky.cloudDensity.value = 0.35;
@@ -75,6 +76,8 @@ export class DayNight {
   private fog: THREE.FogExp2;
   private stars: THREE.Points;
   private envs: THREE.Texture[];
+  /** lighting environment as a shader input whose texture is swapped in place; see update() */
+  private env: ReturnType<typeof pmremTexture>;
   private scene: THREE.Scene;
   private renderer: THREE.WebGPURenderer;
   private lastNight = -1;
@@ -102,10 +105,12 @@ export class DayNight {
       return pmrem.fromScene(envScene, 0, 1, 20000).texture;
     });
     pmrem.dispose();
+    this.env = pmremTexture(this.envs[0]);
+    scene.environmentNode = this.env;
 
     this.fog = new THREE.FogExp2(HAZE.getHex(), fogDensity);
     scene.fog = this.fog;
-    this.hemi = new THREE.HemisphereLight(0xcfd8e6, 0x6b6253, 0.14);
+    this.hemi = new THREE.HemisphereLight(0xcfe0f5, 0x7a6f5c, 0.5);
     this.sun = new THREE.DirectionalLight(0xffe2bd, 4.6);
     scene.add(this.hemi, this.sun, this.sun.target);
     this.update(0);
@@ -128,7 +133,7 @@ export class DayNight {
     // One shadow-casting light: the sun by day, the moon by night, swapped while both are near zero.
     if (elevation > -3) {
       this.lightDir.copy(dir);
-      this.sun.intensity = 4.6 * smooth(-3, 10, elevation);
+      this.sun.intensity = 3.6 * smooth(-3, 10, elevation);
       this.sun.color.copy(SUN_LOW).lerp(SUN_HIGH, smooth(4, 30, elevation));
     } else {
       sunAt(this.hour + 12, this.lightDir);
@@ -140,11 +145,15 @@ export class DayNight {
 
     const dusk = 1 - Math.abs(smooth(-8, 14, elevation) * 2 - 1);
     this.fog.color.copy(HAZE).lerp(NIGHT, n).lerp(DUSK, dusk * 0.6);
-    this.hemi.intensity = 0.14 - 0.05 * n;
+    // sky fill: enough that shaded walls keep their colour by day, a dim moonlit blue by night
+    this.hemi.intensity = 0.55 - 0.4 * n;
     this.hemi.color.setHex(0xcfd8e6).lerp(MOON, n);
-    this.scene.environment = this.envs[elevation > 12 ? 0 : elevation > -6 ? 1 : 2];
-    this.scene.environmentIntensity = 0.13 + 0.07 * n;
-    this.renderer.toneMappingExposure = 1.05 + 0.55 * n;
+    // Swapping scene.environment rebuilt every material's shader (half a second frozen at each dusk and dawn);
+    // changing the texture behind one environment node is just a new binding.
+    const env = this.envs[elevation > 12 ? 0 : elevation > -6 ? 1 : 2];
+    if (this.env.value !== env) this.env.value = env;
+    this.scene.environmentIntensity = 0.35 - 0.1 * n;
+    this.renderer.toneMappingExposure = 1 + 0.6 * n;
     (this.stars.material as THREE.PointsMaterial).opacity = smooth(0.6, 1, n);
 
     if (Math.abs(n - this.lastNight) > 0.002) {

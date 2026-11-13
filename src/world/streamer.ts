@@ -4,7 +4,7 @@ import { type Grid, type Tile, loadJson } from './tile.ts';
 import { buildGround } from './ground.ts';
 import { buildBuildings } from './buildings.ts';
 import { buildProps } from './props.ts';
-import { addProps } from './physics.ts';
+import { addProps, syncProps } from './physics.ts';
 import { isShared } from '../util.ts';
 
 
@@ -65,7 +65,13 @@ export class Streamer {
 
   /** Starts loading what is near (x, z) and drops what is far. Returns when everything near is in. */
   update(x: number, z: number) {
-    for (const [key, cell] of this.cells) if (this.distance(key, x, z) > this.viewDistance * 2) this.unload(cell);
+    for (const [key, cell] of this.cells) {
+      const d = this.distance(key, x, z);
+      if (d > this.viewDistance * 2) this.unload(cell);
+      // kept loaded out to twice the view distance so a border does not flicker, but only drawn out to it:
+      // past that it is haze, and drawing it doubled the triangles
+      else cell.group.visible = d < this.viewDistance * 1.1;
+    }
     const want = [...this.known]
       .filter((k) => !this.cells.has(k) && !this.pending.has(k) && this.distance(k, x, z) < this.viewDistance)
       .sort((a, b) => this.distance(a, x, z) - this.distance(b, x, z));
@@ -127,7 +133,7 @@ export class Streamer {
 
   /** Every physics step: copy knocked-over furniture back into the picture. */
   sync() {
-    for (const c of this.cells.values()) c.physics.sync();
+    syncProps(this.world);
   }
 
   get awake() {

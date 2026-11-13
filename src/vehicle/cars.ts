@@ -36,6 +36,9 @@ export interface CarSpec {
   gripFront: number;
   gripRear: number;
 
+  /** engine recording's pitch for this car: above 1 sounds higher and more highly strung */
+  enginePitch: number;
+
   /** camera positions in car space: x left, y above the road, z towards the nose */
   hoodCamera: [number, number, number];
   cockpitCamera: [number, number, number];
@@ -53,6 +56,7 @@ export const axleHeight = (c: CarSpec) => c.wheelRadius - rideHeight(c) + restLe
 // Published figures: 4.98 x 2.10 x 1.13 m, 2.70 m wheelbase, about 1.6 t dry, 0-100 km/h in 2.8 s, 350 km/h.
 export const SIAN: CarSpec = {
   id: 'sian',
+  enginePitch: 1.25,
   name: 'Lamborghini Sián FKP 37',
   model: 'sian',
   credit: '"2020 Lamborghini Sián FKP 37" by Ddiaz Design (sketchfab.com/ddiaz-design), CC BY 4.0',
@@ -84,6 +88,7 @@ export const SIAN: CarSpec = {
 // Published figures: 4.87 x 1.98 x 1.97 m, 2.89 m wheelbase, about 2.6 t, 0-100 km/h in 4.4 s, limited to 220 km/h.
 export const G63: CarSpec = {
   id: 'g63',
+  enginePitch: 0.85,
   name: 'Mercedes-AMG G 63',
   model: 'g63',
   credit: '"2025 Mercedes-Benz G-Class AMG G 63" by Ddiaz Design (sketchfab.com/ddiaz-design), CC BY-NC-SA 4.0',
@@ -115,6 +120,7 @@ export const G63: CarSpec = {
 /** Stand-in used when a model file is missing: a small hatchback built from code. */
 export const HATCHBACK: CarSpec = {
   id: 'hatchback',
+  enginePitch: 1.05,
   name: 'Hatchback',
   mass: 1080,
   length: 3.84,

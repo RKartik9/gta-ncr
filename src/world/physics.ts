@@ -30,6 +30,26 @@ interface SolidLike {
   h: number;
 }
 
+interface PropRef {
+  mesh: LooseLike['mesh'];
+  i: number;
+}
+
+const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(1, 1, 1), _m = new THREE.Matrix4();
+/**
+ * Every frame: copy moving street furniture back into its instanced mesh. Rapier hands over only the awake
+ * bodies, so a city full of sleeping bins costs nothing.
+ */
+export function syncProps(world: RAPIER.World) {
+  world.forEachActiveRigidBody((body) => {
+    const ref = body.userData as PropRef | undefined;
+    if (!ref) return;
+    const t = body.translation(), r = body.rotation();
+    ref.mesh.setMatrixAt(ref.i, _m.compose(_p.set(t.x, t.y, t.z), _q.set(r.x, r.y, r.z, r.w), _s));
+    ref.mesh.instanceMatrix.needsUpdate = true;
+  });
+}
+
 interface LooseLike {
   mesh: { setMatrixAt(i: number, m: THREE.Matrix4): void; instanceMatrix: { needsUpdate: boolean } };
   poses: THREE.Matrix4[];
@@ -41,7 +61,7 @@ interface LooseLike {
 
 /**
  * One map cell's solid parts. Building walls and trunks and poles are fixed; street furniture becomes bodies that sleep until the car hits them.
- * `sync` copies the moving ones back into their instanced meshes; `dispose` takes everything out of the world.
+ * `syncProps` copies the moving ones back into their instanced meshes; `dispose` takes everything out of the world.
  */
 export function addProps(world: RAPIER.World, solids: SolidLike[], loose: LooseLike[], walls?: { vertices: Float32Array; indices: Uint32Array }) {
   const colliders: RAPIER.Collider[] = [];
@@ -49,9 +69,9 @@ export function addProps(world: RAPIER.World, solids: SolidLike[], loose: LooseL
   for (const s of solids) {
     colliders.push(world.createCollider(RAPIER.ColliderDesc.cylinder(s.h / 2, s.r).setTranslation(s.x, s.h / 2, s.z).setFriction(0.5)));
   }
-  const p = new THREE.Vector3(), q = new THREE.Quaternion(), scale = new THREE.Vector3(1, 1, 1), m = new THREE.Matrix4();
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), scale = new THREE.Vector3(1, 1, 1);
   const kinds = loose.map((kind) => {
-    const bodies = kind.poses.map((pose) => {
+    const bodies = kind.poses.map((pose, i) => {
       pose.decompose(p, q, scale);
       const body = world.createRigidBody(
         RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x, kind.lift, p.z).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }).setLinearDamping(0.3).setAngularDamping(0.4).setCanSleep(true),
@@ -60,23 +80,12 @@ export function addProps(world: RAPIER.World, solids: SolidLike[], loose: LooseL
       const desc = kind.shape === 'box' ? RAPIER.ColliderDesc.cuboid(a, b, c) : RAPIER.ColliderDesc.cylinder(b, a);
       world.createCollider(desc.setMass(kind.mass).setFriction(0.6).setRestitution(0.15), body);
       body.sleep();
+      body.userData = { mesh: kind.mesh, i } satisfies PropRef;
       return body;
     });
     return { kind, bodies };
   });
   return {
-    sync() {
-      for (const { kind, bodies } of kinds) {
-        let moved = false;
-        bodies.forEach((body, i) => {
-          if (body.isSleeping()) return;
-          const t = body.translation(), r = body.rotation();
-          kind.mesh.setMatrixAt(i, m.compose(p.set(t.x, t.y, t.z), q.set(r.x, r.y, r.z, r.w), scale.set(1, 1, 1)));
-          moved = true;
-        });
-        if (moved) kind.mesh.instanceMatrix.needsUpdate = true;
-      }
-    },
     /** how many pieces of furniture are currently moving or have been knocked out of place */
     get awake() {
       return kinds.reduce((n, k) => n + k.bodies.filter((b) => !b.isSleeping()).length, 0);

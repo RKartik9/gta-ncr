@@ -3,15 +3,35 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Delhi Drive</title>
+    <title>Delhi Drive · drive through Central Delhi in your browser</title>
+    <meta name="description" content="A free open-world driving game set in real Central Delhi: Connaught Place, India Gate and Lutyens' Delhi built from OpenStreetMap. Day and night, GPS waypoints, real car sounds and YouTube music. Plays in the browser, no install." />
+    <meta name="theme-color" content="#16181a" />
+    <link rel="canonical" href="https://gta-ncr-ro.vercel.app/" />
+    <!-- link previews: WhatsApp, Facebook, LinkedIn, Slack, Discord, iMessage (Open Graph) and X (Twitter card) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Delhi Drive" />
+    <meta property="og:url" content="https://gta-ncr-ro.vercel.app/" />
+    <meta property="og:title" content="Delhi Drive · drive through Central Delhi in your browser" />
+    <meta property="og:description" content="Open-world driving in real Central Delhi: Connaught Place, India Gate and Lutyens' Delhi. Day and night, GPS, real car sounds and your own music. Free, no install." />
+    <meta property="og:image" content="https://gta-ncr-ro.vercel.app/og.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="A green Lamborghini driving down Kartavya Path towards India Gate" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Delhi Drive · drive through Central Delhi in your browser" />
+    <meta name="twitter:description" content="Open-world driving in real Central Delhi: Connaught Place, India Gate and Lutyens' Delhi. Free, in your browser." />
+    <meta name="twitter:image" content="https://gta-ncr-ro.vercel.app/og.jpg" />
+    <meta name="twitter:image:alt" content="A green Lamborghini driving down Kartavya Path towards India Gate" />
     <style>
-      :root { color-scheme: dark; --panel: rgba(12, 14, 16, 0.62); --line: rgba(255, 255, 255, 0.14); --text: #f3f1ea; --dim: rgba(243, 241, 234, 0.62); --accent: #ffb347; }
+      :root { color-scheme: dark; --panel: rgba(12, 14, 16, 0.72); --line: rgba(255, 255, 255, 0.14); --text: #f3f1ea; --dim: rgba(243, 241, 234, 0.62); --accent: #ffb347; }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0c0d; color: var(--text); font: 13px/1.35 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; -webkit-font-smoothing: antialiased; }
       #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
       #hud { position: fixed; inset: 0; pointer-events: none; transition: opacity 0.35s; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); }
       body.cinematic #hud { opacity: 0; }
-      .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+      .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+      /* no backdrop blur over the 3D view: it re-blurs the canvas every frame. Only the paused menu gets it. */
+      #menu .sheet, #bigmap .side { backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 
       #place { position: absolute; left: 22px; top: 18px; }
       #region { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); }
@@ -47,23 +67,67 @@
       #hint.faded { opacity: 0; }
       #hint.warn, #hint.warn.faded { opacity: 1; color: #ffd0a0; border-color: rgba(255, 170, 90, 0.5); }
 
-      /* Esc menu: everything that is not needed while driving */
-      #menu { position: fixed; inset: 0; z-index: 4; display: grid; place-items: center; background: radial-gradient(ellipse at center, rgba(8, 9, 11, 0.55), rgba(8, 9, 11, 0.85)); backdrop-filter: blur(6px) saturate(0.8); -webkit-backdrop-filter: blur(6px) saturate(0.8); opacity: 0; pointer-events: none; transition: opacity 0.25s; }
+      /* Esc menu: a tabbed sheet holding everything that is not needed while driving */
+      #menu { position: fixed; inset: 0; z-index: 4; display: grid; place-items: center; padding: 16px; background: radial-gradient(ellipse at center, rgba(8, 9, 11, 0.5), rgba(8, 9, 11, 0.86)); backdrop-filter: blur(6px) saturate(0.8); -webkit-backdrop-filter: blur(6px) saturate(0.8); opacity: 0; pointer-events: none; transition: opacity 0.25s; }
       #menu.open { opacity: 1; pointer-events: auto; }
-      #menu .sheet { width: min(860px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 26px 28px; display: grid; grid-template-columns: 1.15fr 1fr; gap: 22px 28px; transform: translateY(10px) scale(0.98); transition: transform 0.25s; }
+      #menu .sheet { width: min(880px, 100%); height: min(600px, calc(100vh - 32px)); display: grid; grid-template-rows: auto 1fr; overflow: hidden; background: rgba(16, 18, 21, 0.92); border-radius: 16px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55); transform: translateY(10px) scale(0.98); transition: transform 0.25s; }
       #menu.open .sheet { transform: none; }
-      #menu h2 { grid-column: 1 / -1; margin: 0; display: flex; align-items: baseline; justify-content: space-between; font-size: 26px; font-weight: 750; letter-spacing: 0.02em; }
-      #menu h2 small { font-size: 11px; font-weight: 500; letter-spacing: 0.16em; color: var(--accent); text-transform: uppercase; }
-      #menu h3 { margin: 0 0 9px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--dim); }
-      #menu section { min-width: 0; }
-      #resume { all: unset; cursor: pointer; padding: 9px 16px; border-radius: 9px; background: var(--accent); color: #17120a; font-weight: 700; font-size: 13px; }
-      .keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 12.5px; color: var(--dim); }
-      .keys kbd { font: 600 11.5px ui-monospace, Menlo, monospace; color: var(--text); background: rgba(255, 255, 255, 0.08); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; white-space: nowrap; justify-self: start; }
-      #time-row { display: flex; align-items: center; gap: 12px; }
-      #time-slider { flex: 1; accent-color: var(--accent); }
-      #time-label { font: 600 14px ui-monospace, Menlo, monospace; min-width: 52px; text-align: right; }
-      #credit { font-size: 10.5px; color: rgba(243, 241, 234, 0.5); grid-column: 1 / -1; }
-      @media (max-width: 700px) { #menu .sheet { grid-template-columns: 1fr; } }
+      .menu-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 22px; border-bottom: 1px solid var(--line); }
+      .eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+      .menu-head h2 { margin: 2px 0 0; font-size: 24px; font-weight: 750; letter-spacing: 0.01em; }
+      #resume { all: unset; cursor: pointer; display: flex; align-items: center; gap: 9px; padding: 10px 18px; border-radius: 10px; background: var(--accent); color: #17120a; font-weight: 700; font-size: 13px; }
+      #resume:hover { filter: brightness(1.08); }
+      #resume kbd { font: 600 10.5px ui-monospace, Menlo, monospace; padding: 1px 5px; border-radius: 4px; background: rgba(0, 0, 0, 0.15); }
+      .menu-body { display: grid; grid-template-columns: 184px 1fr; min-height: 0; }
+      .tabs { display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; border-right: 1px solid var(--line); }
+      .tabs button { all: unset; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 550; color: var(--dim); white-space: nowrap; }
+      .tabs button svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+      .tabs button:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+      .tabs button[aria-selected="true"] { color: var(--text); background: rgba(255, 179, 71, 0.12); box-shadow: inset 2px 0 0 var(--accent); }
+      #menu button:focus-visible, #menu input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .pane { overflow: auto; padding: 18px 22px 24px; }
+      .pane[hidden] { display: none; }
+      .pane h3 { margin: 20px 0 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--dim); }
+      .pane h3:first-child { margin-top: 0; }
+      .card { background: rgba(255, 255, 255, 0.035); border: 1px solid var(--line); border-radius: 12px; }
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 14px; }
+      .row + .row { border-top: 1px solid var(--line); }
+      .row.stack { flex-direction: column; align-items: stretch; gap: 10px; }
+      .label { font-size: 13px; font-weight: 600; }
+      .hint { margin-top: 2px; font-size: 11.5px; color: var(--dim); }
+      .slider { display: flex; align-items: center; gap: 12px; flex: 0 1 280px; }
+      .slider input { flex: 1; min-width: 0; accent-color: var(--accent); }
+      .slider output, #time-label { font: 600 13px ui-monospace, Menlo, monospace; min-width: 48px; text-align: right; }
+      .btn { all: unset; cursor: pointer; padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 600; border: 1px solid var(--line); color: var(--text); white-space: nowrap; }
+      .btn:hover { background: rgba(255, 255, 255, 0.07); }
+      .btn.primary { background: var(--text); color: #101214; border-color: transparent; }
+      .btn.danger { color: #ffb4a8; border-color: rgba(255, 120, 100, 0.35); }
+      .btn.danger:hover { background: rgba(255, 120, 100, 0.1); }
+      .music-row { display: flex; gap: 6px; }
+      #music-url { flex: 1; min-width: 0; padding: 8px 11px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.25); color: var(--text); font: inherit; font-size: 12.5px; }
+      #music-status { margin: 0; font-size: 11.5px; color: var(--dim); min-height: 1.4em; }
+      #menu #cameras { padding: 0; }
+      #menu #cameras button { border: 1px solid var(--line); padding: 6px 10px; }
+      #menu #car-switch { border: 1px solid var(--line); padding: 7px 12px; font-weight: 600; }
+      .choice { padding: 0; }
+      .choice button { border: 1px solid var(--line); padding: 6px 12px; }
+      .controls-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      .controls-grid .card { padding: 14px; }
+      .controls-grid h3 { margin-top: 0; }
+      .keys { display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; align-items: center; font-size: 12.5px; color: var(--dim); }
+      .keys kbd { font: 600 11px ui-monospace, Menlo, monospace; color: var(--text); background: rgba(255, 255, 255, 0.08); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 2px 6px; white-space: nowrap; justify-self: start; }
+      .mono { margin: 0; padding: 12px 14px; font: 11px/1.6 ui-monospace, Menlo, monospace; color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+      #menu #stats { padding: 12px 14px; }
+      #credit, #build { font-size: 11.5px; line-height: 1.55; color: var(--dim); }
+      #build { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; opacity: 0.7; }
+      @media (max-width: 700px) {
+        .menu-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+        .tabs { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px; }
+        .tabs button[aria-selected="true"] { box-shadow: inset 0 -2px 0 var(--accent); }
+        .controls-grid { grid-template-columns: 1fr; }
+        .row { flex-wrap: wrap; }
+        .slider { flex-basis: 100%; }
+      }
       #toast { position: absolute; left: 50%; top: 20%; transform: translateX(-50%); padding: 9px 16px; font-size: 14px; opacity: 0; transition: opacity 0.3s; }
       #toast.show { opacity: 1; }
 
@@ -132,50 +196,105 @@
     </div>
 
     <div id="menu" aria-hidden="true">
-      <div class="sheet panel">
-        <h2><span>Paused <small>Delhi Drive</small></span><button id="resume">Resume · Esc</button></h2>
-        <section>
-          <h3>Controls</h3>
-          <div class="keys">
-            <kbd>W A S D</kbd><span>drive and steer (arrow keys too)</span>
-            <kbd>Space</kbd><span>handbrake</span>
-            <kbd>Mouse drag</kbd><span>look around · wheel zooms the chase camera</span>
-            <kbd>C · 1–6</kbd><span>next camera · pick a camera</span>
-            <kbd>V</kbd><span>switch car</span>
-            <kbd>R</kbd><span>back onto the nearest road</span>
-            <kbd>N</kbd><span>jump between day and night</span>
-            <kbd>T</kbd><span>pause or run the clock</span>
-            <kbd>L</kbd><span>headlights</span>
-            <kbd>M</kbd><span>map: click to set a GPS waypoint</span>
-            <kbd>H</kbd><span>horn</span>
-            <kbd>Esc</kbd><span>this menu</span>
-          </div>
-          <h3 style="margin-top: 18px">Controller</h3>
-          <div class="keys">
-            <kbd>RT · LT</kbd><span>accelerate · brake and reverse</span>
-            <kbd>Left stick</kbd><span>steer (d-pad too)</span>
-            <kbd>Right stick</kbd><span>look around</span>
-            <kbd>A ✕</kbd><span>handbrake</span>
-            <kbd>B ○</kbd><span>back onto the road</span>
-            <kbd>X □</kbd><span>horn</span>
-            <kbd>Y △</kbd><span>next camera</span>
-            <kbd>LB · RB</kbd><span>switch car · headlights</span>
-            <kbd>View · Menu</kbd><span>day and night · this menu</span>
-            <kbd>D-pad up</kbd><span>pause or run the clock</span>
-            <kbd>D-pad down</kbd><span>map and waypoint</span>
-          </div>
-        </section>
-        <section style="display: grid; gap: 18px; align-content: start">
-          <div><h3>Camera</h3><div id="cameras" class="panel"></div></div>
-          <div><h3>Car</h3><button id="car-switch" class="panel"></button></div>
-          <div><h3>Time of day</h3><div id="time-row"><input id="time-slider" type="range" min="0" max="24" step="0.05" aria-label="Time of day" /><span id="time-label">16:00</span></div></div>
-          <div><h3>Graphics</h3><div id="quality-row" class="panel choice"></div><p class="note">Lower settings run smoother. The resolution also adjusts itself to keep the frame rate up.</p></div>
-          <div><h3>Progress</h3><p class="note" style="margin-top: 0">Your place, car, clock and waypoint are saved in this browser as you play.</p><button id="start-over" class="panel" style="all: unset; cursor: pointer; padding: 6px 11px; border-radius: 7px; font-size: 12px; border: 1px solid var(--line)">Start over</button></div>
-          <div><h3>Performance</h3><div id="stats" class="panel"></div></div>
-          <div><h3>Controller</h3><div id="pad-report" class="panel" style="padding: 10px 12px; font: 11px/1.6 ui-monospace, Menlo, monospace; color: var(--dim); white-space: pre-wrap; word-break: break-word">Checking…</div></div>
-        </section>
-        <div id="credit"></div>
-        <div id="build" style="grid-column: 1 / -1; font: 10px ui-monospace, Menlo, monospace; color: rgba(243,241,234,0.35)"></div>
+      <div class="sheet panel" role="dialog" aria-label="Paused">
+        <header class="menu-head">
+          <div><div class="eyebrow">Delhi Drive</div><h2>Paused</h2></div>
+          <button id="resume">Resume <kbd>Esc</kbd></button>
+        </header>
+        <div class="menu-body">
+          <nav class="tabs" role="tablist" aria-label="Menu sections">
+            <button role="tab" id="tab-drive" aria-controls="pane-drive" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17h14M6 17l1.5-6h9L18 17M8 11l1.2-3.5h5.6L16 11"/><circle cx="8" cy="17" r="1.6"/><circle cx="16" cy="17" r="1.6"/></svg>Drive</button>
+            <button role="tab" id="tab-sound" aria-controls="pane-sound" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>Sound &amp; music</button>
+            <button role="tab" id="tab-graphics" aria-controls="pane-graphics" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Graphics</button>
+            <button role="tab" id="tab-controls" aria-controls="pane-controls" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="7" width="19" height="10" rx="5"/><path d="M7 10v4M5 12h4"/><circle cx="16" cy="11" r=".6"/><circle cx="18" cy="13" r=".6"/></svg>Controls</button>
+            <button role="tab" id="tab-game" aria-controls="pane-game" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg>Game</button>
+          </nav>
+
+          <section class="pane" id="pane-drive" role="tabpanel" aria-labelledby="tab-drive">
+            <h3>Car</h3>
+            <div class="card">
+              <div class="row"><div><div class="label">Vehicle</div><div class="hint">Swap cars where you stand</div></div><button id="car-switch"></button></div>
+            </div>
+            <h3>Camera</h3>
+            <div class="card"><div class="row stack"><div><div class="label">View</div><div class="hint">C cycles views · drag to look around · wheel zooms the chase view</div></div><div id="cameras"></div></div></div>
+            <h3>World</h3>
+            <div class="card">
+              <div class="row"><div><div class="label">Time of day</div><div class="hint">N jumps between day and night · T pauses the clock</div></div><div class="slider"><input id="time-slider" type="range" min="0" max="24" step="0.05" aria-label="Time of day" /><span id="time-label">16:00</span></div></div>
+            </div>
+          </section>
+
+          <section class="pane" id="pane-sound" role="tabpanel" aria-labelledby="tab-sound" hidden>
+            <h3>Music</h3>
+            <div class="card">
+              <div class="row stack">
+                <div><div class="label">YouTube</div><div class="hint">Paste a video or playlist link; it plays in the background while you drive</div></div>
+                <form id="music-form" class="music-row"><input id="music-url" type="text" placeholder="https://youtube.com/watch?v=…" aria-label="YouTube link" autocomplete="off" /><button type="submit" class="btn primary">Play</button><button type="button" id="music-stop" class="btn">Stop</button></form>
+                <p id="music-status" role="status"></p>
+              </div>
+            </div>
+            <h3>Volume</h3>
+            <div class="card">
+              <div class="row"><div class="label">Music</div><div class="slider"><input id="music-volume" type="range" min="0" max="100" aria-label="Music volume" /></div></div>
+              <div class="row"><div><div class="label">Car sounds</div><div class="hint">Engine, tyres, horn and crashes</div></div><div class="slider"><input id="sfx-volume" type="range" min="0" max="100" aria-label="Car sound volume" /></div></div>
+            </div>
+          </section>
+
+          <section class="pane" id="pane-graphics" role="tabpanel" aria-labelledby="tab-graphics" hidden>
+            <h3>Quality</h3>
+            <div class="card">
+              <div class="row stack"><div><div class="label">Preset</div><div class="hint">Lower runs smoother. Resolution also adjusts itself to keep the frame rate up. Changing it reloads where you are.</div></div><div id="quality-row" class="choice"></div></div>
+            </div>
+            <h3>Performance</h3>
+            <div class="card"><div id="stats"></div></div>
+          </section>
+
+          <section class="pane" id="pane-controls" role="tabpanel" aria-labelledby="tab-controls" hidden>
+            <div class="controls-grid">
+              <div class="card">
+                <h3>Keyboard &amp; mouse</h3>
+                <div class="keys">
+                  <kbd>W A S D</kbd><span>drive and steer (arrows too)</span>
+                  <kbd>Space</kbd><span>handbrake</span>
+                  <kbd>H</kbd><span>horn (hold)</span>
+                  <kbd>L</kbd><span>headlights</span>
+                  <kbd>R</kbd><span>back onto the road</span>
+                  <kbd>V</kbd><span>switch car</span>
+                  <kbd>C · 1–6</kbd><span>next camera · pick one</span>
+                  <kbd>Drag · wheel</kbd><span>look around · zoom</span>
+                  <kbd>M</kbd><span>map and GPS waypoint</span>
+                  <kbd>N · T</kbd><span>day / night · pause clock</span>
+                  <kbd>Esc</kbd><span>this menu</span>
+                </div>
+              </div>
+              <div class="card">
+                <h3>Controller</h3>
+                <div class="keys">
+                  <kbd>RT · LT</kbd><span>accelerate · brake, reverse</span>
+                  <kbd>Left stick</kbd><span>steer (d-pad too)</span>
+                  <kbd>Right stick</kbd><span>look around</span>
+                  <kbd>A ✕</kbd><span>handbrake</span>
+                  <kbd>X □</kbd><span>horn</span>
+                  <kbd>B ○</kbd><span>back onto the road</span>
+                  <kbd>Y △</kbd><span>next camera</span>
+                  <kbd>LB · RB</kbd><span>switch car · headlights</span>
+                  <kbd>D-pad ↑ ↓</kbd><span>pause clock · map</span>
+                  <kbd>View · Menu</kbd><span>day / night · this menu</span>
+                </div>
+              </div>
+            </div>
+            <h3>Controller status</h3>
+            <div class="card"><pre id="pad-report" class="mono">Checking…</pre></div>
+          </section>
+
+          <section class="pane" id="pane-game" role="tabpanel" aria-labelledby="tab-game" hidden>
+            <h3>Progress</h3>
+            <div class="card">
+              <div class="row"><div><div class="label">Saved automatically</div><div class="hint">Your place, car, clock and waypoint are kept in this browser</div></div><button id="start-over" class="btn danger">Start over</button></div>
+            </div>
+            <h3>Credits</h3>
+            <div class="card"><div class="row stack"><div id="credit"></div><div id="build"></div></div></div>
+          </section>
+        </div>
       </div>
     </div>
 

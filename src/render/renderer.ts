@@ -12,8 +12,9 @@ export async function createRenderer(canvas: HTMLCanvasElement, quality: Quality
   await renderer.init();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, quality.pixelRatio));
   renderer.setSize(window.innerWidth, window.innerHeight, false);
-  renderer.toneMapping = THREE.AgXToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  // Neutral keeps colours true (AgX washed the city out to grey)
+  renderer.toneMapping = THREE.NeutralToneMapping;
+  renderer.toneMappingExposure = 1;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   return renderer;

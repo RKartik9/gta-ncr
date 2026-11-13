@@ -90,7 +90,7 @@ export interface RoadHit {
 /** Closest point on any road in the loaded tiles that passes `accept`. */
 export function nearestRoad(tiles: Tile[], x: number, z: number, accept: (r: Road) => boolean = () => true): RoadHit | null {
   let best: RoadHit | null = null;
-  for (const road of tiles.flatMap((t) => t.roads)) {
+  for (const tile of tiles) for (const road of tile.roads) {
     if (!accept(road)) continue;
     const p = road.pts;
     for (let i = 0; i + 3 < p.length; i += 2) {

@@ -9,7 +9,7 @@ import { onNight } from '../render/sky.ts';
 /** Lumpy canopy built from a few displaced spheres, darker underneath to fake self-shadowing. */
 function canopyGeometry(seed: number, blobs: [number, number, number, number, number][]) {
   const parts = blobs.map(([x, y, z, r, squash], n) => {
-    let g: THREE.BufferGeometry = new THREE.IcosahedronGeometry(1, n === 0 ? 2 : 1);
+    let g: THREE.BufferGeometry = new THREE.IcosahedronGeometry(1, 1); // ponytail: detail 2 on the main blob cost ~1M triangles a city; the leaf cards hide the facets
     g.deleteAttribute('normal');
     g.deleteAttribute('uv');
     g = mergeVertices(g);
@@ -134,12 +134,13 @@ function placeTrees(tile: Tile, density: number): TreeSpot[] {
       const ring = tile.buildings[n].outer;
       if (pointInRing(x, z, ring) || pointInRing(x + 1.2, z, ring) || pointInRing(x - 1.2, z, ring) || pointInRing(x, z + 1.2, ring) || pointInRing(x, z - 1.2, ring)) return true;
     }
-    return roads(x, z, 0.9);
+    return roads(x, z, 1);
   };
   const tryAdd = (x: number, z: number, tall: boolean) => {
-    // a cell's roads run on past its edge, and so do their avenue trees
-    const { minX, maxX, minZ, maxZ } = tile.bounds;
-    if (x < minX - 400 || x > maxX + 400 || z < minZ - 400 || z > maxZ + 400 || blocked(x, z)) return;
+    // Each cell plants only its own ground. A cell's roads run on past its edge, so the avenue along a road
+    // that crosses the border is still planted, once, by whichever cell the tree stands in; planting past the
+    // edge doubled trees there and put them on the neighbour's roads, which this cell cannot see.
+    if (!inside(tile, x, z) || blocked(x, z)) return;
     spots.push({ x, z, scale: 0.75 + rnd() * 0.6, tall });
   };
 
@@ -260,7 +261,7 @@ function poolTexture() {
 const LAMP_HEAD = new THREE.Vector3(0, 8.38, 2.1);
 const SODIUM = 0xffb46b;
 
-function buildLamps(tile: Tile) {
+function buildLamps(tile: Tile, onRoad: ReturnType<typeof roadIndex>) {
   const geo = cached('g-lamp', () => mergeGeometries([
     new THREE.CylinderGeometry(0.07, 0.11, 8.5, 8).translate(0, 4.25, 0),
     new THREE.BoxGeometry(0.08, 0.08, 2.2).translate(0, 8.4, 1),
@@ -269,21 +270,26 @@ function buildLamps(tile: Tile) {
   const matrices: THREE.Matrix4[] = [];
   const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
   for (const r of tile.roads) {
-    if (!isMajor(r)) continue;
+    // main roads every 34 m, alternating sides; ordinary streets every 45 m, so no street is left dark
+    if (!isStreet(r) || r.kind === 'path') continue;
+    const every = isMajor(r) ? 34 : 45;
     let carry = 9, side = 1;
     for (let i = 0; i + 3 < r.pts.length; i += 2) {
       const ax = r.pts[i], az = r.pts[i + 1];
       const dx = r.pts[i + 2] - ax, dz = r.pts[i + 3] - az;
       const len = Math.hypot(dx, dz);
       if (len < 0.01) continue;
-      for (let s = carry; s < len; s += 34) {
+      for (let s = carry; s < len; s += every) {
         const off = (r.width / 2 + 0.6) * side;
-        // the arm reaches back over the carriageway
-        q.setFromAxisAngle(up, Math.atan2(dx, dz) + (side > 0 ? -Math.PI / 2 : Math.PI / 2));
-        matrices.push(new THREE.Matrix4().compose(new THREE.Vector3(ax + (dx / len) * s - (dz / len) * off, 0, az + (dz / len) * s + (dx / len) * off), q, new THREE.Vector3(1, 1, 1)));
+        const x = ax + (dx / len) * s - (dz / len) * off, z = az + (dz / len) * s + (dx / len) * off;
         side = -side;
+        // at a junction the kerb of this road is the middle of the one crossing it: no pole there
+        if (!inside(tile, x, z) || onRoad(x, z, 0.3)) continue;
+        // the arm reaches back over the carriageway
+        q.setFromAxisAngle(up, Math.atan2(dx, dz) + (side < 0 ? -Math.PI / 2 : Math.PI / 2));
+        matrices.push(new THREE.Matrix4().compose(new THREE.Vector3(x, 0, z), q, new THREE.Vector3(1, 1, 1)));
       }
-      carry = (((carry - len) % 34) + 34) % 34;
+      carry = (((carry - len) % every) + every) % every;
     }
   }
   const group = new THREE.Group();
@@ -294,7 +300,7 @@ function buildLamps(tile: Tile) {
   // the lamp itself: a glowing lens under the housing
   const lensMat = cached('m-lens', () => {
     const m = new THREE.MeshStandardMaterial({ color: 0x2a2620, emissive: SODIUM, emissiveIntensity: 0, roughness: 0.3 });
-    onNight((n) => (m.emissiveIntensity = 14 * n));
+    onNight((n) => (m.emissiveIntensity = 30 * n));
     return m;
   });
   const lens = new THREE.InstancedMesh(cached('g-lens', () => new THREE.BoxGeometry(0.26, 0.02, 0.6).translate(LAMP_HEAD.x, LAMP_HEAD.y - 0.07, LAMP_HEAD.z)), lensMat, matrices.length);
@@ -305,10 +311,10 @@ function buildLamps(tile: Tile) {
     m.polygonOffset = true;
     m.polygonOffsetFactor = -8;
     m.polygonOffsetUnits = -32;
-    onNight((n) => (m.opacity = 0.55 * n));
+    onNight((n) => (m.opacity = 0.85 * n));
     return m;
   });
-  const pool = new THREE.InstancedMesh(cached('g-pool', () => new THREE.PlaneGeometry(15, 15).rotateX(-Math.PI / 2).translate(LAMP_HEAD.x, 0.08, LAMP_HEAD.z)), poolMat, matrices.length);
+  const pool = new THREE.InstancedMesh(cached('g-pool', () => new THREE.PlaneGeometry(20, 20).rotateX(-Math.PI / 2).translate(LAMP_HEAD.x, 0.08, LAMP_HEAD.z)), poolMat, matrices.length);
   pool.renderOrder = 2;
 
   const heads: THREE.Vector3[] = [];
@@ -337,6 +343,8 @@ export class LampLights {
   heads: THREE.Vector3[];
   private timer = 0;
   private intensity = 0;
+  private best: THREE.Vector3[] = [];
+  private dist: number[] = [];
 
   constructor(scene: THREE.Scene, heads: THREE.Vector3[], count: number) {
     this.heads = heads;
@@ -356,19 +364,53 @@ export class LampLights {
     this.timer -= dt;
     if (this.timer > 0 || this.heads.length < this.lights.length || this.intensity === 0) return;
     this.timer = 0.25;
-    const near = this.heads
-      .map((h) => ({ h, d: (h.x - car.x) ** 2 + (h.z - car.z) ** 2 }))
-      .sort((a, b) => a.d - b.d);
+    // nearest few by insertion into a short list: no sorting thousands of lamps four times a second
+    const k = this.lights.length, best = this.best, dist = this.dist;
+    best.length = dist.length = 0;
+    for (const h of this.heads) {
+      const d = (h.x - car.x) ** 2 + (h.z - car.z) ** 2;
+      if (best.length === k && d >= dist[k - 1]) continue;
+      let i = Math.min(best.length, k - 1);
+      while (i > 0 && dist[i - 1] > d) {
+        best[i] = best[i - 1];
+        dist[i] = dist[i - 1];
+        i--;
+      }
+      best[i] = h;
+      dist[i] = d;
+    }
     this.lights.forEach((l, i) => {
-      const h = near[i].h;
+      const h = best[i];
       l.position.copy(h);
       l.target.position.set(h.x, 0, h.z);
     });
   }
 }
 
-/** Signal poles stand a little off the junction node OpenStreetMap gives. */
-const signalSpots = (tile: Tile) => Array.from({ length: tile.signals.length / 2 }, (_, i): [number, number] => [tile.signals[i * 2] + 3.5, tile.signals[i * 2 + 1] + 3.5]);
+/**
+ * OpenStreetMap puts a signal on the junction node, in the middle of the road. The pole goes on the nearest
+ * corner clear of every carriageway; a junction with no clear corner close by gets none.
+ */
+function signalSpots(tile: Tile, onRoad: ReturnType<typeof roadIndex>) {
+  const out: [number, number, number][] = [];
+  for (let i = 0; i < tile.signals.length; i += 2) {
+    const sx = tile.signals[i], sz = tile.signals[i + 1];
+    if (!inside(tile, sx, sz)) continue;
+    search: for (let d = 3.5; d <= 16; d += 1.5) {
+      for (let a = 0; a < 8; a++) {
+        const x = sx + Math.cos(Math.PI / 4 + (a * Math.PI) / 4) * d, z = sz + Math.sin(Math.PI / 4 + (a * Math.PI) / 4) * d;
+        if (!onRoad(x, z, 0.6)) {
+          out.push([x, z, Math.atan2(sx - x, sz - z)]); // lights face the junction
+          break search;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Each cell owns what stands on its own ground, so nothing is built twice where cells meet. */
+const inside = (tile: Tile, x: number, z: number) => x >= tile.bounds.minX && x < tile.bounds.maxX && z >= tile.bounds.minZ && z < tile.bounds.maxZ;
 
 const BUCKET = 50;
 const bucketKey = (x: number, z: number) => `${Math.floor(x / BUCKET)},${Math.floor(z / BUCKET)}`;
@@ -413,10 +455,10 @@ function roadIndex(tile: Tile) {
   };
 }
 
-function buildSignals(tile: Tile) {
+function buildSignals(spots: [number, number, number][]) {
   const group = new THREE.Group();
   group.name = 'signals';
-  const n = tile.signals.length / 2;
+  const n = spots.length;
   if (!n) return group;
   const pole = new THREE.InstancedMesh(
     cached('g-signal', () => mergeGeometries([new THREE.CylinderGeometry(0.08, 0.1, 5.2, 8).translate(0, 2.6, 0), new THREE.BoxGeometry(0.42, 1.25, 0.3).translate(0, 4.7, 0.2)])!),
@@ -433,10 +475,9 @@ function buildSignals(tile: Tile) {
     return mesh;
   });
   const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
-  const rnd = mulberry32(5);
   for (let i = 0; i < n; i++) {
-    q.setFromAxisAngle(up, Math.floor(rnd() * 4) * (Math.PI / 2));
-    const [sx, sz] = signalSpots(tile)[i];
+    const [sx, sz, facing] = spots[i];
+    q.setFromAxisAngle(up, facing);
     const m = new THREE.Matrix4().compose(new THREE.Vector3(sx, 0, sz), q, new THREE.Vector3(1, 1, 1));
     pole.setMatrixAt(i, m);
     lamps.forEach((l) => l.setMatrixAt(i, m));
@@ -620,14 +661,16 @@ export function buildProps(tile: Tile, plaza: [number, number], treeDensity: num
   const group = new THREE.Group();
   group.name = 'props';
   const spots = placeTrees(tile, treeDensity);
-  const lamps = buildLamps(tile);
-  const loose = buildLoose(tile, roadIndex(tile));
-  group.add(buildTrees(spots), lamps.group, buildSignals(tile), ...loose.map((l) => l.mesh));
+  const roads = roadIndex(tile);
+  const lamps = buildLamps(tile, roads);
+  const signals = signalSpots(tile, roads);
+  const loose = buildLoose(tile, roads);
+  group.add(buildTrees(spots), lamps.group, buildSignals(signals), ...loose.map((l) => l.mesh));
   if (hasFlag) group.add(buildFlag(plaza));
   const solids: Solid[] = [
     ...spots.map((s) => ({ x: s.x, z: s.z, r: (s.tall ? 0.18 : 0.3) * s.scale, h: s.tall ? 3 : 5 })),
     ...lamps.poles,
-    ...signalSpots(tile).map(([x, z]) => ({ x, z, r: 0.1, h: 5.2 })),
+    ...signals.map(([x, z]) => ({ x, z, r: 0.1, h: 5.2 })),
     ...(hasFlag ? [{ x: plaza[0], z: plaza[1], r: 0.55, h: 63 }] : []),
   ];
   return { group, treeCount: spots.length, lampHeads: lamps.heads, solids, loose };

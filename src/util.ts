@@ -66,3 +66,21 @@ export function cullable(mesh: { computeBoundingSphere(): void; boundingSphere: 
   if (mesh.boundingSphere) mesh.boundingSphere.radius += 25;
   mesh.frustumCulled = true;
 }
+
+/** localStorage that never throws: blocked storage (private windows) just means nothing is remembered. */
+export function stored<T>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : (JSON.parse(v) as T);
+  } catch {
+    return fallback;
+  }
+}
+
+export function store(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // storage blocked: lasts until reload
+  }
+}

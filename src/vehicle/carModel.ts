@@ -25,46 +25,73 @@ export interface CarModel {
 }
 
 /**
- * Headlights that light the road and a red glow behind, placed from the car's measured size.
- * They stay in the scene when off (intensity 0): adding and removing lights would recompile every material.
+ * One set of car lights for the whole game (headlights, tail glow, cabin and dash), moved onto whichever car is
+ * being driven. Switching cars must not change which lights are in the scene: every material's shader depends on
+ * that set, so swapping per-car lights rebuilt them all and froze the game for half a second.
  */
-export function addLamps(model: CarModel, castShadow: boolean) {
-  const c = model.spec;
-  const y = 0.68 - rideHeight(c);
-  const nose = c.length / 2 - 0.15;
-  const heads = [1, -1].map((side, i) => {
-    const l = new THREE.SpotLight(0xfff1dc, 0, 80, 0.44, 0.45, 1.4);
-    l.position.set(side * c.width * 0.33, y, nose);
-    l.target.position.set(side * c.width * 0.2, y - 1.4, nose + 24);
-    if (castShadow && i === 0) {
-      l.castShadow = true;
-      l.shadow.mapSize.set(1024, 1024);
-      l.shadow.camera.near = 0.3;
-      l.shadow.bias = -0.0006;
-    }
-    model.group.add(l, l.target);
-    return l;
-  });
-  const tail = new THREE.PointLight(0xff1a0a, 0, 5, 2);
-  tail.position.set(0, y, -c.length / 2 - 0.4);
-  model.group.add(tail);
-  let lit = false, braking = false;
-  const apply = () => {
-    for (const l of heads) l.intensity = lit ? 420 : 0;
-    tail.intensity = (lit ? 0.6 : 0) + (braking ? 1.6 : 0);
-    model.setLights(lit);
-  };
-  return {
-    get on() {
-      return lit;
-    },
-    set(on: boolean, brake: boolean) {
-      if (on === lit && brake === braking) return;
-      lit = on;
-      braking = brake;
-      apply();
-    },
-  };
+export class CarLamps {
+  private heads: THREE.SpotLight[];
+  private tail = new THREE.PointLight(0xff1a0a, 0, 5, 2);
+  // cabin: a warm courtesy light over the seats and the glow of the dash, so the inside is not a black hole at night
+  private cabin = new THREE.PointLight(0xffd9a8, 0, 2.2, 2);
+  private dash = new THREE.PointLight(0x9fd0ff, 0, 1.2, 2);
+  private model: CarModel | null = null;
+  private lit = false;
+  private braking = false;
+
+  constructor(castShadow: boolean) {
+    this.heads = [0, 1].map((i) => {
+      const l = new THREE.SpotLight(0xfff1dc, 0, 80, 0.44, 0.45, 1.4);
+      if (castShadow && i === 0) {
+        l.castShadow = true;
+        l.shadow.mapSize.set(1024, 1024);
+        l.shadow.camera.near = 0.3;
+        l.shadow.bias = -0.0006;
+      }
+      return l;
+    });
+  }
+
+  get on() {
+    return this.lit;
+  }
+
+  /** Moves the lights onto `model`, placed from its measured size. */
+  attach(model: CarModel) {
+    this.model?.setLights(false);
+    this.model = model;
+    const c = model.spec;
+    const y = 0.68 - rideHeight(c);
+    const nose = c.length / 2 - 0.15;
+    this.heads.forEach((l, i) => {
+      const side = i === 0 ? 1 : -1;
+      l.position.set(side * c.width * 0.33, y, nose);
+      l.target.position.set(side * c.width * 0.2, y - 1.4, nose + 24);
+      model.group.add(l, l.target);
+    });
+    this.tail.position.set(0, y, -c.length / 2 - 0.4);
+    const [, eyeY, eyeZ] = c.cockpitCamera;
+    this.cabin.position.set(0, eyeY - rideHeight(c) + 0.22, eyeZ - 0.15);
+    this.dash.position.set(0, eyeY - rideHeight(c) - 0.3, eyeZ + 0.55);
+    model.group.add(this.tail, this.cabin, this.dash);
+    this.apply();
+  }
+
+  set(on: boolean, brake: boolean) {
+    if (on === this.lit && brake === this.braking) return;
+    this.lit = on;
+    this.braking = brake;
+    this.apply();
+  }
+
+  private apply() {
+    const lit = this.lit;
+    for (const l of this.heads) l.intensity = lit ? 420 : 0;
+    this.tail.intensity = (lit ? 0.6 : 0) + (this.braking ? 1.6 : 0);
+    this.cabin.intensity = lit ? 1.4 : 0;
+    this.dash.intensity = lit ? 0.5 : 0;
+    this.model?.setLights(lit);
+  }
 }
 
 // Side profile of a small hatchback, rear (-z) to nose (+z), in metres above the road.

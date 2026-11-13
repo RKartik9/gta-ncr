@@ -23,6 +23,8 @@ export class CameraDirector {
   private yaw = 0;
   private pos = new THREE.Vector3();
   private look = new THREE.Vector3();
+  /** chase camera's place relative to the car, smoothed there rather than in the world so it does not trail behind at speed */
+  private chaseOffset = new THREE.Vector3();
   private fov = 55;
   private fitFov = 0;
   private fitNear = 0;
@@ -139,7 +141,7 @@ export class CameraDirector {
       near = 10;
     } else if (this.mode === 'chase') {
       this.yaw += shortAngle(heading - this.yaw) * (this.snap ? 1 : damp(5, dt));
-      const back = (spec.length * 1.25 + 1.2 + clamp(speed, 0, 60) * 0.035) * this.chaseZoom;
+      const back = (spec.length * 1.25 + 1.2 + clamp(speed, 0, 60) * 0.012) * this.chaseZoom;
       const pivot = new THREE.Vector3(car.position.x, ground + spec.height + 0.3, car.position.z);
       // orbit the pivot by the mouse-look angles; at rest this is the usual spot behind and above
       const yaw = this.yaw + this.lookYaw;
@@ -152,11 +154,16 @@ export class CameraDirector {
       dir.divideScalar(dist);
       const hit = vehicle.castRay(pivot, dir, dist + 0.4);
       if (hit !== null) want.copy(pivot).addScaledVector(dir, Math.max(1.2, hit - 0.4));
-      this.pos.lerp(want, this.snap ? 1 : damp(12, dt));
+      // Smoothing the world position made the camera lag v/k behind the car: 8 m at top speed. Smoothing the
+      // offset from the car instead keeps the distance steady at any speed and still eases bumps and turns.
+      want.sub(pivot);
+      if (this.snap) this.chaseOffset.copy(want);
+      else this.chaseOffset.lerp(want, damp(10, dt));
+      this.pos.copy(pivot).add(this.chaseOffset);
       cam.position.copy(this.pos);
       const lead = 2.5 * Math.max(0, Math.cos(this.lookYaw));
       cam.lookAt(car.position.x + fwd.x * lead, ground + spec.height * 0.72, car.position.z + fwd.z * lead);
-      fov = 56 + clamp(Math.abs(speed), 0, 70) * 0.26;
+      fov = 56 + clamp(Math.abs(speed), 0, 70) * 0.1; // a hint of speed without shrinking the car away
     } else if (this.mode === 'hood' || this.mode === 'cockpit') {
       // Bolted to the car, so it leans and pitches with the body.
       const [x, y, z] = this.mode === 'hood' ? spec.hoodCamera : spec.cockpitCamera;
