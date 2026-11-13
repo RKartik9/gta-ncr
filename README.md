@@ -16,11 +16,11 @@
 
 - **The real city.** Roads, buildings, parks and trees of central New Delhi come from OpenStreetMap. Connaught Place's white Georgian colonnades, the red sandstone ministries, India Gate and the 63 m flag over Central Park are all built in.
 - **Day and night.** A full day passes in 24 minutes, or jump to night with N. After dark the sodium street lamps, shop signs and office windows come on, headlights switch on by themselves, and the cabin glows.
-- **Two cars.** A Lamborghini Sián FKP 37 and a Mercedes-AMG G 63, with real suspension and grip (Rapier physics). Switch with V.
+- **Two cars.** A Lamborghini Sián FKP 37 and a Mercedes-AMG G 63, on real suspension (Rapier physics) and tyres that slip: wheels spin and lock, the anti-lock brakes pulse, weight shifts under braking, the handbrake swings the tail out, and the tall G 63 leans and can go over. Switch with V.
 - **Six cameras.** Chase, hood, cockpit, top-down, cinematic and a free drone. Drag to look around and use the wheel to zoom.
 - **GPS.** Open the map (M), click anywhere or pick a landmark, and follow the purple route along the roads. One-way streets are respected.
 - **Sound.** Recorded engine, tyre squeal, crashes and horn. Paste any YouTube video or playlist link into the menu to drive to your own music.
-- **Knock things over.** Bins, barricades and parked autos fly when you hit them. Trees and lamp posts don't move.
+- **Knock things over.** Bins, barricades, parked autos, lamp posts and traffic signals go flying or topple when you hit them. Trees don't move.
 - **Runs anywhere.** WebGPU where the browser has it, WebGL 2 otherwise. Four quality presets, a resolution governor that holds the frame rate, and game controller support.
 - **Saves as you go.** Your place, car, clock and waypoint are kept in the browser.
 
@@ -69,7 +69,8 @@ npm run dev:https    # https on your network, so a phone or another PC can use a
 ## How it's built
 
 - **[three.js](https://threejs.org/)** (WebGPU renderer and TSL node materials) for graphics: cascaded sun shadows, bloom, a physical sky, and street lamps lit from the nearest poles.
-- **[Rapier](https://rapier.rs/)** for physics: a ray-cast vehicle, building walls as triangle meshes, and street furniture that sleeps until hit.
+- **[Rapier](https://rapier.rs/)** for physics: sprung ray-cast wheels with the game's own tyre model on top (`src/vehicle/vehicle.ts`), building walls as triangle meshes, and street furniture that sleeps until hit.
+- **Only the vicinity is drawn.** Each 1 km map cell is cut into 200 m chunks; chunks beyond the preset's draw distance are taken out of the scene and haze hides the edge. The pause menu's Graphics tab shows which graphics card the browser is using.
 - **TypeScript + [Vite](https://vite.dev/)**, with no UI framework.
 - **The map** is baked from OpenStreetMap (Overpass) by `tools/bake/bake.mjs` into 1 km cells under `public/tiles/`. Cells load and unload around the car as you drive.
 - **Sound** uses the Web Audio API. Recorded loops are pitched and filtered live, and music plays through the YouTube IFrame Player API.

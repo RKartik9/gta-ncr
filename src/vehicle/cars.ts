@@ -23,18 +23,32 @@ export interface CarSpec {
   suspensionRest: number;
   suspensionStiffness: number;
 
-  drive: 'fwd' | 'awd';
+  /** share of the car's weight on the front wheels, standing still */
+  weightFront: number;
+  /** how strongly each axle's anti-roll bar ties its two wheels, in the units of the suspension stiffness */
+  antiRoll: number;
+  /** share of that roll stiffness at the front (default 0.575). More at the front makes a car steadier, less eager to spin. */
+  antiRollFront?: number;
+
+  /** share of the engine's push sent to the front wheels: 1 front-wheel drive, 0 rear */
+  driveFront: number;
   /** newtons at full throttle, shared between the driven wheels */
   engineForce: number;
   reverseForce: number;
-  /** metres per second squared */
+  /** metres per second squared the brakes would manage if the tyres held: more than they can, so the anti-lock has work to do */
   brakeDecel: number;
+  /** share of the braking done by the front wheels */
+  brakeFront: number;
   /** metres per second */
   topSpeed: number;
   reverseSpeed: number;
   maxSteer: number;
+  /** the tyres' peak grip as a share of the weight on them: about 1 for a road tyre, more for a supercar's */
   gripFront: number;
   gripRear: number;
+  /** air drag, and the push down from wings and floor, in newtons per (m/s) squared */
+  drag: number;
+  downforce: number;
 
   /** engine recording's pitch for this car: above 1 sounds higher and more highly strung */
   enginePitch: number;
@@ -65,22 +79,27 @@ export const SIAN: CarSpec = {
   width: 2.1,
   height: 1.133,
   groundClearance: 0.12,
-  centreOfMass: 0.33,
+  centreOfMass: 0.44,
   wheelRadius: 0.355,
   track: 0.85,
   axleFront: 1.3,
   axleRear: -1.4,
   suspensionRest: 0.2,
   suspensionStiffness: 60,
-  drive: 'awd',
+  weightFront: 0.43,
+  antiRoll: 20,
+  driveFront: 0.3,
   engineForce: 19000,
   reverseForce: 6000,
-  brakeDecel: 12,
+  brakeDecel: 18,
+  brakeFront: 0.62,
   topSpeed: 97,
   reverseSpeed: 10,
   maxSteer: 0.5,
-  gripFront: 2.4,
-  gripRear: 2.3,
+  gripFront: 1.4,
+  gripRear: 1.48,
+  drag: 0.42,
+  downforce: 0.5,
   hoodCamera: [0, 0.98, 0.75],
   cockpitCamera: [0.37, 0.93, 0.02],
 };
@@ -97,22 +116,31 @@ export const G63: CarSpec = {
   width: 1.984,
   height: 1.966,
   groundClearance: 0.24,
-  centreOfMass: 0.52,
+  centreOfMass: 0.78,
   wheelRadius: 0.39,
   track: 0.83,
   axleFront: 1.6,
   axleRear: -1.29,
   suspensionRest: 0.34,
-  suspensionStiffness: 26,
-  drive: 'awd',
+  // Soft, as a tall body-on-frame car's is: 7-8 degrees of lean in a hard corner. With its weight 0.78 m up over
+  // a 1.66 m track it is close to going over: a full-lock swerve one way and back from 90 km/h rolls it. The
+  // roll stiffness it has is mostly at the front, which keeps it from spinning when it is thrown about.
+  suspensionStiffness: 20,
+  weightFront: 0.53,
+  antiRoll: 2.2,
+  antiRollFront: 0.85,
+  driveFront: 0.4,
   engineForce: 20000,
   reverseForce: 9000,
-  brakeDecel: 9.5,
+  brakeDecel: 14,
+  brakeFront: 0.64,
   topSpeed: 61,
   reverseSpeed: 10,
   maxSteer: 0.55,
-  gripFront: 1.45,
-  gripRear: 1.4,
+  gripFront: 1.08,
+  gripRear: 1.1,
+  drag: 0.85,
+  downforce: 0,
   hoodCamera: [0, 1.72, 0.85],
   cockpitCamera: [0.42, 1.5, 0.1],
 };
@@ -127,22 +155,27 @@ export const HATCHBACK: CarSpec = {
   width: 1.68,
   height: 1.5,
   groundClearance: 0.2,
-  centreOfMass: 0.36,
+  centreOfMass: 0.54,
   wheelRadius: 0.31,
   track: 0.74,
   axleFront: 1.24,
   axleRear: -1.22,
   suspensionRest: 0.26,
   suspensionStiffness: 34,
-  drive: 'fwd',
+  weightFront: 0.62,
+  antiRoll: 6,
+  driveFront: 1,
   engineForce: 5200,
   reverseForce: 3000,
-  brakeDecel: 8.5,
+  brakeDecel: 13,
+  brakeFront: 0.68,
   topSpeed: 38,
   reverseSpeed: 9,
   maxSteer: 0.56,
-  gripFront: 1.8,
-  gripRear: 1.7,
+  gripFront: 1.04,
+  gripRear: 1.04,
+  drag: 0.38,
+  downforce: 0,
   hoodCamera: [0, 1.16, 0.78],
   cockpitCamera: [-0.37, 1.2, -0.12],
 };

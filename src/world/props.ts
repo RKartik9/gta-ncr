@@ -2,9 +2,14 @@ import * as THREE from 'three/webgpu';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Tile } from './tile.ts';
 import { isMajor, isStreet } from './ground.ts';
-import { cached, cullable, mulberry32, pointInRing, ringArea } from '../util.ts';
+import type { Chunks } from './chunks.ts';
+import { type Budget, cached, mulberry32, pointInRing, ringArea } from '../util.ts';
+import { Instances, instanced } from '../render/instances.ts';
 import { barkTexture, flagTexture, leafCardTexture, leafTexture } from '../render/textures.ts';
 import { onNight } from '../render/sky.ts';
+
+/** A material for `Instances`: everything that stands in the street is drawn as many copies of one shape. */
+const std = (p: ConstructorParameters<typeof THREE.MeshStandardNodeMaterial>[0], tinted = false) => instanced(new THREE.MeshStandardNodeMaterial(p), tinted);
 
 /** Lumpy canopy built from a few displaced spheres, darker underneath to fake self-shadowing. */
 function canopyGeometry(seed: number, blobs: [number, number, number, number, number][]) {
@@ -113,7 +118,7 @@ interface TreeSpot {
   tall: boolean;
 }
 
-function placeTrees(tile: Tile, density: number): TreeSpot[] {
+async function placeTrees(tile: Tile, density: number, budget: Budget): Promise<TreeSpot[]> {
   const rnd = mulberry32(2024);
   const spots: TreeSpot[] = [];
   // Buildings filed by 50 m square (padded by the 1.5 m clearance), so each candidate spot checks only its neighbours.
@@ -149,6 +154,7 @@ function placeTrees(tile: Tile, density: number): TreeSpot[] {
   // Avenue trees: Lutyens' Delhi is planted road by road, a single species per avenue.
   for (const r of tile.roads) {
     if (!isStreet(r)) continue;
+    if (budget.due) await budget.wait();
     const tall = isMajor(r) && rnd() < 0.2;
     const spacing = (isMajor(r) ? 12 : 17) / density;
     let carry = rnd() * spacing;
@@ -172,6 +178,7 @@ function placeTrees(tile: Tile, density: number): TreeSpot[] {
   // Parks: clumps round the edge, lawns in the middle.
   for (const a of tile.areas) {
     if (a.kind !== 'green') continue;
+    if (budget.due) await budget.wait();
     const area = Math.abs(ringArea(a.outer));
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (let i = 0; i < a.outer.length; i += 2) {
@@ -194,12 +201,10 @@ function placeTrees(tile: Tile, density: number): TreeSpot[] {
   return spots;
 }
 
-function buildTrees(spots: TreeSpot[]) {
-  const group = new THREE.Group();
-  group.name = 'trees';
-  const leaf = cached('m-leaf', () => new THREE.MeshStandardMaterial({ map: leafTexture(), roughness: 0.88, vertexColors: true }));
-  const cards = cached('m-leaf-card', () => new THREE.MeshStandardMaterial({ map: leafCardTexture(), alphaTest: 0.4, alphaToCoverage: true, side: THREE.DoubleSide, roughness: 0.8, vertexColors: true }));
-  const bark = cached('m-bark', () => new THREE.MeshStandardMaterial({ map: barkTexture(), roughness: 0.95 }));
+function buildTrees(spots: TreeSpot[], chunks: Chunks) {
+  const leaf = cached('m-leaf', () => std({ map: leafTexture(), roughness: 0.88, vertexColors: true }, true));
+  const cards = cached('m-leaf-card', () => std({ map: leafCardTexture(), alphaTest: 0.4, alphaToCoverage: true, side: THREE.DoubleSide, roughness: 0.8, vertexColors: true }, true));
+  const bark = cached('m-bark', () => std({ map: barkTexture(), roughness: 0.95 }));
   const rnd = mulberry32(77);
   const crown = (seed: number, blobs: [number, number, number, number, number][], count: number) => ({
     canopy: canopyGeometry(seed, shrink(blobs)),
@@ -211,19 +216,18 @@ function buildTrees(spots: TreeSpot[]) {
     // ashoka: the tall narrow column seen along boundary walls
     { tall: true, ...crown(2, [[0, 4.2, 0, 1.5, 1.5], [0, 7, 0, 1.3, 1.6], [0, 9.6, 0, 0.9, 1.6]], 50), trunk: new THREE.CylinderGeometry(0.14, 0.2, 3, 6).translate(0, 1.5, 0), colour: [0.2, 0.36, 0.16] },
   ]);
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), c = new THREE.Color();
-  for (const kind of kinds) {
-    const list = spots.filter((s) => s.tall === kind.tall);
+  const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), c = new THREE.Color();
+  for (const [chunk, here] of chunks.bucket(spots, (s) => [s.x, s.z])) for (const kind of kinds) {
+    const list = here.filter((s) => s.tall === kind.tall);
     if (!list.length) continue;
-    const canopy = new THREE.InstancedMesh(kind.canopy, leaf, list.length);
-    const sprays = new THREE.InstancedMesh(kind.cards, cards, list.length);
-    const trunk = new THREE.InstancedMesh(kind.trunk, bark, list.length);
-    list.forEach((s, i) => {
+    const poses = list.map((s) => {
       q.setFromAxisAngle(up, rnd() * Math.PI * 2);
-      m.compose(new THREE.Vector3(s.x, 0, s.z), q, new THREE.Vector3(s.scale, s.scale * (0.9 + rnd() * 0.25), s.scale));
-      canopy.setMatrixAt(i, m);
-      sprays.setMatrixAt(i, m);
-      trunk.setMatrixAt(i, m);
+      return new THREE.Matrix4().compose(new THREE.Vector3(s.x, 0, s.z), q, new THREE.Vector3(s.scale, s.scale * (0.9 + rnd() * 0.25), s.scale));
+    });
+    const canopy = new Instances(kind.canopy, leaf, poses);
+    const sprays = new Instances(kind.cards, cards, poses);
+    const trunk = new Instances(kind.trunk, bark, poses);
+    list.forEach((_s, i) => {
       const v = 0.8 + rnd() * 0.5;
       c.setRGB(kind.colour[0] * v * (0.9 + rnd() * 0.3), kind.colour[1] * v, kind.colour[2] * v);
       // the textures carry their own green now, so the tint only nudges each tree's shade
@@ -232,14 +236,14 @@ function buildTrees(spots: TreeSpot[]) {
       sprays.setColorAt(i, c);
     });
     for (const mesh of [canopy, sprays, trunk]) {
-      // the solid core casts the crown's shadow; alpha-cut cards in every shadow cascade cost more than they add
-      mesh.castShadow = mesh !== sprays;
+      // the solid core casts the crown's shadow; alpha-cut cards in every shadow cascade cost more than they add,
+      // and a trunk's shadow is lost under its own crown's
+      mesh.castShadow = mesh === canopy;
       mesh.receiveShadow = true;
-      cullable(mesh);
-      group.add(mesh);
+      // from far off the solid crown is enough; the leaf sprays are thousands of see-through cards
+      (mesh === sprays ? chunk.near : chunk.far).add(mesh);
     }
   }
-  return group;
 }
 
 /** Soft round falloff for the pool of light a lamp throws on the road. */
@@ -261,12 +265,16 @@ function poolTexture() {
 const LAMP_HEAD = new THREE.Vector3(0, 8.38, 2.1);
 const SODIUM = 0xffb46b;
 
-function buildLamps(tile: Tile, onRoad: ReturnType<typeof roadIndex>) {
+function buildLamps(tile: Tile, onRoad: ReturnType<typeof roadIndex>, chunks: Chunks) {
+  // pole, arm and housing, then the lens as a second material: one mesh, so the lot falls over together
   const geo = cached('g-lamp', () => mergeGeometries([
-    new THREE.CylinderGeometry(0.07, 0.11, 8.5, 8).translate(0, 4.25, 0),
-    new THREE.BoxGeometry(0.08, 0.08, 2.2).translate(0, 8.4, 1),
-    new THREE.BoxGeometry(0.34, 0.12, 0.8).translate(LAMP_HEAD.x, LAMP_HEAD.y, LAMP_HEAD.z),
-  ])!);
+    mergeGeometries([
+      new THREE.CylinderGeometry(0.07, 0.11, 8.5, 8).translate(0, 4.25, 0),
+      new THREE.BoxGeometry(0.08, 0.08, 2.2).translate(0, 8.4, 1),
+      new THREE.BoxGeometry(0.34, 0.12, 0.8).translate(LAMP_HEAD.x, LAMP_HEAD.y, LAMP_HEAD.z),
+    ])!,
+    new THREE.BoxGeometry(0.26, 0.02, 0.6).translate(LAMP_HEAD.x, LAMP_HEAD.y - 0.07, LAMP_HEAD.z),
+  ], true)!);
   const matrices: THREE.Matrix4[] = [];
   const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
   for (const r of tile.roads) {
@@ -292,46 +300,51 @@ function buildLamps(tile: Tile, onRoad: ReturnType<typeof roadIndex>) {
       carry = (((carry - len) % every) + every) % every;
     }
   }
-  const group = new THREE.Group();
-  group.name = 'street-lamps';
-  const mesh = new THREE.InstancedMesh(geo, cached('m-lamp', () => new THREE.MeshStandardMaterial({ color: 0x74797c, roughness: 0.45, metalness: 0.85 })), matrices.length);
-  mesh.castShadow = true;
-
   // the lamp itself: a glowing lens under the housing
   const lensMat = cached('m-lens', () => {
-    const m = new THREE.MeshStandardMaterial({ color: 0x2a2620, emissive: SODIUM, emissiveIntensity: 0, roughness: 0.3 });
+    const m = std({ color: 0x2a2620, emissive: SODIUM, emissiveIntensity: 0, roughness: 0.3 });
     onNight((n) => (m.emissiveIntensity = 30 * n));
     return m;
   });
-  const lens = new THREE.InstancedMesh(cached('g-lens', () => new THREE.BoxGeometry(0.26, 0.02, 0.6).translate(LAMP_HEAD.x, LAMP_HEAD.y - 0.07, LAMP_HEAD.z)), lensMat, matrices.length);
 
   // the pool of light it throws on the road: cheap enough to draw under every lamp in the city
   const poolMat = cached('m-pool', () => {
-    const m = new THREE.MeshBasicMaterial({ map: poolTexture(), color: SODIUM, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+    const m = instanced(new THREE.MeshBasicNodeMaterial({ map: poolTexture(), color: SODIUM, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
     m.polygonOffset = true;
     m.polygonOffsetFactor = -8;
     m.polygonOffsetUnits = -32;
-    onNight((n) => (m.opacity = 0.85 * n));
+    onNight((n) => {
+      m.opacity = 0.85 * n;
+      m.visible = n > 0.01; // by day there is nothing to draw, and every lamp in view would still be a draw call
+    });
     return m;
   });
-  const pool = new THREE.InstancedMesh(cached('g-pool', () => new THREE.PlaneGeometry(20, 20).rotateX(-Math.PI / 2).translate(LAMP_HEAD.x, 0.08, LAMP_HEAD.z)), poolMat, matrices.length);
-  pool.renderOrder = 2;
 
   const heads: THREE.Vector3[] = [];
-  const poles: Solid[] = [];
-  matrices.forEach((m, i) => {
-    poles.push({ x: m.elements[12], z: m.elements[14], r: 0.12, h: 8.5 });
-    mesh.setMatrixAt(i, m);
-    lens.setMatrixAt(i, m);
-    pool.setMatrixAt(i, m);
-    heads.push(LAMP_HEAD.clone().applyMatrix4(m));
-  });
-  for (const m of [mesh, lens, pool]) {
-    cullable(m);
-    group.add(m);
+  const loose: Loose[] = [];
+  const mats = [cached('m-lamp', () => std({ color: 0x74797c, roughness: 0.45, metalness: 0.85 })), lensMat];
+  for (const [chunk, poses] of chunks.bucket(matrices, (m) => [m.elements[12], m.elements[14]])) {
+    const mesh = new Instances(geo, mats, poses, true);
+    mesh.castShadow = true;
+    const pool = new Instances(cached('g-pool', () => new THREE.PlaneGeometry(20, 20).rotateX(-Math.PI / 2).translate(LAMP_HEAD.x, 0.08, LAMP_HEAD.z)), poolMat, poses, true);
+    pool.renderOrder = 2;
+    const mine = poses.map((m) => LAMP_HEAD.clone().applyMatrix4(m));
+    heads.push(...mine);
+    chunk.far.add(mesh, pool);
+    // a pole stands until something hits it hard enough; once it goes over, it no longer lights the road
+    loose.push({
+      mesh, poses, shape: 'cylinder', half: [0.11, 4.25, 0.11], lift: 4.25, drop: 4.25, mass: 95,
+      onTopple: (i) => {
+        pool.setMatrixAt(i, GONE);
+        pool.instanceMatrix.needsUpdate = true;
+        mine[i].set(1e9, 0, 1e9); // out of reach of `LampLights`
+      },
+    });
   }
-  return { group, heads, poles };
+  return { heads, loose };
 }
+
+const GONE = new THREE.Matrix4().makeScale(0, 0, 0);
 
 /**
  * Real light from the lamps nearest the car, so the car and the kerbs are lit and not just the road.
@@ -455,39 +468,32 @@ function roadIndex(tile: Tile) {
   };
 }
 
-function buildSignals(spots: [number, number, number][]) {
-  const group = new THREE.Group();
-  group.name = 'signals';
-  const n = spots.length;
-  if (!n) return group;
-  const pole = new THREE.InstancedMesh(
-    cached('g-signal', () => mergeGeometries([new THREE.CylinderGeometry(0.08, 0.1, 5.2, 8).translate(0, 2.6, 0), new THREE.BoxGeometry(0.42, 1.25, 0.3).translate(0, 4.7, 0.2)])!),
-    cached('m-signal', () => new THREE.MeshStandardMaterial({ color: 0x1d1f1e, roughness: 0.6, metalness: 0.4 })),
-    n,
-  );
-  const lamps = [0xff2a1c, 0xffb21c, 0x24e06a].map((colour, k) => {
-    const on = k === 0;
-    const mesh = new THREE.InstancedMesh(
-      cached(`g-signal-lamp-${k}`, () => new THREE.CircleGeometry(0.13, 12).translate(0, 5.08 - k * 0.38, 0.36)),
-      cached(`m-signal-lamp-${k}`, () => new THREE.MeshStandardMaterial({ color: on ? colour : 0x111111, emissive: colour, emissiveIntensity: on ? 6 : 0.15, roughness: 0.3 })),
-      n,
-    );
-    return mesh;
-  });
+function buildSignals(spots: [number, number, number][], chunks: Chunks): Loose[] {
+  // the pole and head, then the three lamps, each its own material: one mesh, so the lot falls over together
+  const geo = cached('g-signal', () => mergeGeometries([
+    mergeGeometries([new THREE.CylinderGeometry(0.08, 0.1, 5.2, 8).translate(0, 2.6, 0), new THREE.BoxGeometry(0.42, 1.25, 0.3).translate(0, 4.7, 0.2)])!,
+    ...[0, 1, 2].map((k) => new THREE.CircleGeometry(0.13, 12).translate(0, 5.08 - k * 0.38, 0.36)),
+  ], true)!);
+  const mats = [
+    cached('m-signal', () => std({ color: 0x1d1f1e, roughness: 0.6, metalness: 0.4 })),
+    ...[0xff2a1c, 0xffb21c, 0x24e06a].map((colour, k) => {
+      const on = k === 0;
+      return cached(`m-signal-lamp-${k}`, () => std({ color: on ? colour : 0x111111, emissive: colour, emissiveIntensity: on ? 6 : 0.15, roughness: 0.3 }));
+    }),
+  ];
   const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
-  for (let i = 0; i < n; i++) {
-    const [sx, sz, facing] = spots[i];
-    q.setFromAxisAngle(up, facing);
-    const m = new THREE.Matrix4().compose(new THREE.Vector3(sx, 0, sz), q, new THREE.Vector3(1, 1, 1));
-    pole.setMatrixAt(i, m);
-    lamps.forEach((l) => l.setMatrixAt(i, m));
+  const loose: Loose[] = [];
+  for (const [chunk, here] of chunks.bucket(spots, ([x, z]) => [x, z])) {
+    const poses = here.map(([sx, sz, facing]) => {
+      q.setFromAxisAngle(up, facing);
+      return new THREE.Matrix4().compose(new THREE.Vector3(sx, 0, sz), q, new THREE.Vector3(1, 1, 1));
+    });
+    const mesh = new Instances(geo, mats, poses, true);
+    mesh.castShadow = true;
+    chunk.near.add(mesh);
+    loose.push({ mesh, poses, shape: 'cylinder', half: [0.1, 2.6, 0.1], lift: 2.6, drop: 2.6, mass: 70 });
   }
-  pole.castShadow = true;
-  for (const mesh of [pole, ...lamps]) {
-    cullable(mesh);
-    group.add(mesh);
-  }
-  return group;
+  return loose;
 }
 
 /** The 63 m flagpole in Central Park: the landmark you see from every radial road. */
@@ -523,7 +529,7 @@ export interface Solid {
 
 /** A kind of street furniture the car can knock flying: one instanced mesh, one physics body per instance. */
 export interface Loose {
-  mesh: THREE.InstancedMesh;
+  mesh: Instances;
   /** where each instance stands at the start */
   poses: THREE.Matrix4[];
   /** half extents for a box, or [radius, half height] for a cylinder; centred on the body */
@@ -531,7 +537,11 @@ export interface Loose {
   half: [number, number, number];
   /** how far the centre sits above the ground */
   lift: number;
+  /** how far the mesh's own origin sits below that centre: a pole is modelled from its foot */
+  drop?: number;
   mass: number;
+  /** called once, when instance `i` has been knocked well off upright */
+  onTopple?: (i: number) => void;
 }
 
 function stripeTexture() {
@@ -566,7 +576,7 @@ function stripeTexture() {
  * Street furniture that moves when hit: Delhi Police barricades parked at the kerb of main roads,
  * green municipal bins on the pavements, and bollards where OpenStreetMap has them.
  */
-function buildLoose(tile: Tile, onRoad: (x: number, z: number, margin: number) => boolean): Loose[] {
+function buildLoose(tile: Tile, onRoad: (x: number, z: number, margin: number) => boolean, chunks: Chunks): Loose[] {
   const rnd = mulberry32(909);
   const up = new THREE.Vector3(0, 1, 0);
   const barricades: THREE.Matrix4[] = [];
@@ -604,74 +614,80 @@ function buildLoose(tile: Tile, onRoad: (x: number, z: number, margin: number) =
     return out;
   }, []);
 
-  const steel = cached('m-steel', () => new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.6 }));
+  const steel = cached('m-steel', () => std({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.6 }));
+  // parts that share a material are merged first: each material group is a draw call of its own
   const barricadeGeo = cached('g-barricade', () => mergeGeometries([
     new THREE.BoxGeometry(2.0, 0.42, 0.05).translate(0, 0.28, 0),
-    new THREE.BoxGeometry(2.0, 0.08, 0.06).translate(0, -0.07, 0),
-    new THREE.BoxGeometry(0.06, 1.1, 0.06).translate(-0.95, 0, 0),
-    new THREE.BoxGeometry(0.06, 1.1, 0.06).translate(0.95, 0, 0),
-    new THREE.BoxGeometry(0.1, 0.04, 0.7).translate(-0.95, -0.53, 0),
-    new THREE.BoxGeometry(0.1, 0.04, 0.7).translate(0.95, -0.53, 0),
+    mergeGeometries([
+      new THREE.BoxGeometry(2.0, 0.08, 0.06).translate(0, -0.07, 0),
+      new THREE.BoxGeometry(0.06, 1.1, 0.06).translate(-0.95, 0, 0),
+      new THREE.BoxGeometry(0.06, 1.1, 0.06).translate(0.95, 0, 0),
+      new THREE.BoxGeometry(0.1, 0.04, 0.7).translate(-0.95, -0.53, 0),
+      new THREE.BoxGeometry(0.1, 0.04, 0.7).translate(0.95, -0.53, 0),
+    ])!,
   ], true)!);
-  const stripes = cached('m-stripes', () => new THREE.MeshStandardMaterial({ map: stripeTexture(), roughness: 0.6 }));
-  const barricadeMats = [stripes, steel, steel, steel, steel, steel];
+  const stripes = cached('m-stripes', () => std({ map: stripeTexture(), roughness: 0.6 }));
+  const barricadeMats = [stripes, steel];
   const binGeo = cached('g-bin', () => new THREE.CylinderGeometry(0.3, 0.26, 1, 14));
-  const binMat = cached('m-bin', () => new THREE.MeshStandardMaterial({ color: 0x2d7a3a, roughness: 0.55 }));
+  const binMat = cached('m-bin', () => std({ color: 0x2d7a3a, roughness: 0.55 }));
   const bollardGeo = cached('g-bollard', () => new THREE.CylinderGeometry(0.11, 0.13, 0.9, 10));
-  const bollardMat = cached('m-bollard', () => new THREE.MeshStandardMaterial({ color: 0x24262a, roughness: 0.5, metalness: 0.4 }));
+  const bollardMat = cached('m-bollard', () => std({ color: 0x24262a, roughness: 0.5, metalness: 0.4 }));
 
-  const make = (geo: THREE.BufferGeometry, mat: THREE.Material | THREE.Material[], poses: THREE.Matrix4[], rest: Omit<Loose, 'mesh' | 'poses'>): Loose => {
-    const mesh = new THREE.InstancedMesh(geo, mat, Math.max(1, poses.length));
-    mesh.count = poses.length;
-    poses.forEach((m, i) => mesh.setMatrixAt(i, m));
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    cullable(mesh);
-    return { mesh, poses, ...rest };
-  };
+  const make = (geo: THREE.BufferGeometry, mat: THREE.Material | THREE.Material[], all: THREE.Matrix4[], rest: Omit<Loose, 'mesh' | 'poses'>): Loose[] =>
+    [...chunks.bucket(all, (m) => [m.elements[12], m.elements[14]])].map(([chunk, poses]) => {
+      const mesh = new Instances(geo, mat, poses, true);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      chunk.near.add(mesh);
+      return { mesh, poses, ...rest };
+    });
   // green CNG body, yellow canvas hood: the Delhi auto
   const autoGeo = cached('g-auto', () => mergeGeometries([
-    new THREE.BoxGeometry(1.3, 0.7, 2.5).translate(0, -0.3, 0),
-    new THREE.BoxGeometry(1.0, 0.8, 0.5).translate(0, 0.1, 1.05),
-    new THREE.BoxGeometry(1.4, 0.08, 2.0).translate(0, 0.82, -0.2),
-    new THREE.BoxGeometry(1.4, 1.0, 0.08).translate(0, 0.33, -1.2),
-    new THREE.CylinderGeometry(0.22, 0.22, 0.14, 12).rotateZ(Math.PI / 2).translate(0, -0.63, 1.1),
-    new THREE.CylinderGeometry(0.22, 0.22, 0.14, 12).rotateZ(Math.PI / 2).translate(0.6, -0.63, -0.9),
-    new THREE.CylinderGeometry(0.22, 0.22, 0.14, 12).rotateZ(Math.PI / 2).translate(-0.6, -0.63, -0.9),
-    new THREE.BoxGeometry(0.05, 1.0, 0.05).translate(0.62, 0.33, 0.78),
-    new THREE.BoxGeometry(0.05, 1.0, 0.05).translate(-0.62, 0.33, 0.78),
+    mergeGeometries([
+      new THREE.BoxGeometry(1.3, 0.7, 2.5).translate(0, -0.3, 0),
+      new THREE.BoxGeometry(1.0, 0.8, 0.5).translate(0, 0.1, 1.05),
+    ])!,
+    mergeGeometries([
+      new THREE.BoxGeometry(1.4, 0.08, 2.0).translate(0, 0.82, -0.2),
+      new THREE.BoxGeometry(1.4, 1.0, 0.08).translate(0, 0.33, -1.2),
+    ])!,
+    mergeGeometries([
+      new THREE.CylinderGeometry(0.22, 0.22, 0.14, 12).rotateZ(Math.PI / 2).translate(0, -0.63, 1.1),
+      new THREE.CylinderGeometry(0.22, 0.22, 0.14, 12).rotateZ(Math.PI / 2).translate(0.6, -0.63, -0.9),
+      new THREE.CylinderGeometry(0.22, 0.22, 0.14, 12).rotateZ(Math.PI / 2).translate(-0.6, -0.63, -0.9),
+      new THREE.BoxGeometry(0.05, 1.0, 0.05).translate(0.62, 0.33, 0.78),
+      new THREE.BoxGeometry(0.05, 1.0, 0.05).translate(-0.62, 0.33, 0.78),
+    ])!,
   ], true)!);
-  const autoGreen = cached('m-auto-green', () => new THREE.MeshStandardMaterial({ color: 0x1f7a3c, roughness: 0.35, metalness: 0.3 }));
-  const autoYellow = cached('m-auto-yellow', () => new THREE.MeshStandardMaterial({ color: 0xe6b81e, roughness: 0.7 }));
-  const black = cached('m-black', () => new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 }));
-  const autoMats = [autoGreen, autoGreen, autoYellow, autoYellow, black, black, black, black, black];
+  const autoGreen = cached('m-auto-green', () => std({ color: 0x1f7a3c, roughness: 0.35, metalness: 0.3 }));
+  const autoYellow = cached('m-auto-yellow', () => std({ color: 0xe6b81e, roughness: 0.7 }));
+  const black = cached('m-black', () => std({ color: 0x111111, roughness: 0.8 }));
+  const autoMats = [autoGreen, autoYellow, black];
   return [
-    make(autoGeo, autoMats, autos, { shape: 'box', half: [0.7, 0.85, 1.3], lift: 0.85, mass: 350 }),
-    make(barricadeGeo, barricadeMats, barricades, { shape: 'box', half: [1.0, 0.55, 0.35], lift: 0.55, mass: 45 }),
-    make(binGeo, binMat, bins, { shape: 'cylinder', half: [0.3, 0.5, 0.3], lift: 0.5, mass: 14 }),
-    make(bollardGeo, bollardMat, bollards, { shape: 'cylinder', half: [0.13, 0.45, 0.13], lift: 0.45, mass: 30 }),
+    ...make(autoGeo, autoMats, autos, { shape: 'box', half: [0.7, 0.85, 1.3], lift: 0.85, mass: 350 }),
+    ...make(barricadeGeo, barricadeMats, barricades, { shape: 'box', half: [1.0, 0.55, 0.35], lift: 0.55, mass: 45 }),
+    ...make(binGeo, binMat, bins, { shape: 'cylinder', half: [0.3, 0.5, 0.3], lift: 0.5, mass: 14 }),
+    ...make(bollardGeo, bollardMat, bollards, { shape: 'cylinder', half: [0.13, 0.45, 0.13], lift: 0.45, mass: 30 }),
   ];
 }
 
 /** `plaza` is where the CP flagpole stands; only the cell that holds it builds it. */
-export function buildProps(tile: Tile, plaza: [number, number], treeDensity: number) {
+export async function buildProps(tile: Tile, plaza: [number, number], treeDensity: number, chunks: Chunks, budget: Budget) {
   const { minX, maxX, minZ, maxZ } = tile.bounds;
   const hasFlag = plaza[0] >= minX && plaza[0] < maxX && plaza[1] >= minZ && plaza[1] < maxZ;
-  const group = new THREE.Group();
-  group.name = 'props';
-  const spots = placeTrees(tile, treeDensity);
+  const spots = await placeTrees(tile, treeDensity, budget);
+  buildTrees(spots, chunks);
+  if (budget.due) await budget.wait();
   const roads = roadIndex(tile);
-  const lamps = buildLamps(tile, roads);
-  const signals = signalSpots(tile, roads);
-  const loose = buildLoose(tile, roads);
-  group.add(buildTrees(spots), lamps.group, buildSignals(signals), ...loose.map((l) => l.mesh));
-  if (hasFlag) group.add(buildFlag(plaza));
+  const lamps = buildLamps(tile, roads, chunks);
+  if (budget.due) await budget.wait();
+  const signals = buildSignals(signalSpots(tile, roads), chunks);
+  const loose = [...buildLoose(tile, roads, chunks), ...lamps.loose, ...signals];
+  if (hasFlag) chunks.at(plaza[0], plaza[1]).far.add(buildFlag(plaza));
+  // trees and the flagpole stop the car dead; everything else gives way
   const solids: Solid[] = [
     ...spots.map((s) => ({ x: s.x, z: s.z, r: (s.tall ? 0.18 : 0.3) * s.scale, h: s.tall ? 3 : 5 })),
-    ...lamps.poles,
-    ...signals.map(([x, z]) => ({ x, z, r: 0.1, h: 5.2 })),
     ...(hasFlag ? [{ x: plaza[0], z: plaza[1], r: 0.55, h: 63 }] : []),
   ];
-  return { group, treeCount: spots.length, lampHeads: lamps.heads, solids, loose };
+  return { treeCount: spots.length, lampHeads: lamps.heads, solids, loose };
 }

@@ -48,6 +48,47 @@ export class GeoBuilder {
     g.computeBoundingSphere();
     return g;
   }
+
+  /**
+   * As `build`, but cut into one geometry per `size`-metre square of ground, each triangle filed by its centre.
+   * A whole layer in one piece is always drawn in full; in squares, what is far off or out of sight is skipped.
+   * `x` and `z` are the corner of each square.
+   */
+  buildChunks(size: number) {
+    const { pos, nor, uv, col, idx } = this;
+    const lists = new Map<number, { x: number; z: number; tris: number[] }>();
+    for (let t = 0; t < idx.length; t += 3) {
+      const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+      const i = Math.floor((pos[a] + pos[b] + pos[c]) / 3 / size), j = Math.floor((pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3 / size);
+      const key = (i + 32768) * 65536 + j + 32768;
+      let list = lists.get(key);
+      if (!list) lists.set(key, (list = { x: i * size, z: j * size, tris: [] }));
+      list.tris.push(t);
+    }
+    // a vertex shared by triangles in two squares is copied into both; `stamp` says which square last took it
+    const remap = new Int32Array(this.count), stamp = new Int32Array(this.count);
+    let n = 0;
+    const out: { x: number; z: number; geometry: THREE.BufferGeometry }[] = [];
+    for (const { x, z, tris } of lists.values()) {
+      n++;
+      const part = new GeoBuilder(this.useColour);
+      let count = 0;
+      for (const t of tris) for (let k = 0; k < 3; k++) {
+        const v = idx[t + k];
+        if (stamp[v] !== n) {
+          stamp[v] = n;
+          remap[v] = count++;
+          part.pos.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
+          part.nor.push(nor[v * 3], nor[v * 3 + 1], nor[v * 3 + 2]);
+          part.uv.push(uv[v * 2], uv[v * 2 + 1]);
+          if (this.useColour) part.col.push(col[v * 3], col[v * 3 + 1], col[v * 3 + 2]);
+        }
+        part.idx.push(remap[v]);
+      }
+      out.push({ x, z, geometry: part.build() });
+    }
+    return out;
+  }
 }
 
 /** Flat ribbon of constant width along a polyline, with mitred joins and round ends. */

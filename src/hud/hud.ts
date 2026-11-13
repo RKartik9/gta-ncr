@@ -179,11 +179,11 @@ export class Hud {
     this.road.textContent = name || '\u00a0';
   }
 
-  say(text: string) {
+  say(text: string, ms = 2200) {
     this.toast.textContent = text;
     this.toast.classList.add('show');
     clearTimeout(this.toastTimer);
-    this.toastTimer = window.setTimeout(() => this.toast.classList.remove('show'), 2200);
+    this.toastTimer = window.setTimeout(() => this.toast.classList.remove('show'), ms);
   }
 
   /** The minimap holds a piece for each map cell that is loaded. */

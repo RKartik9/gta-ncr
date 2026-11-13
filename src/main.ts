@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { QUALITY_NAMES, type QualityName, pickQuality, query, saveQuality, savedQuality } from './config.ts';
+import { QUALITY_NAMES, type QualityName, detectGpu, pickQuality, query, saveQuality, savedQuality } from './config.ts';
 import { type Progress, clearProgress, loadProgress, saveProgress } from './save.ts';
 import { backendName, createPipeline, createRenderer, resolutionGovernor, setupShadows } from './render/renderer.ts';
 import { DayNight, onNight } from './render/sky.ts';
@@ -10,7 +10,7 @@ import { Gps } from './world/gps.ts';
 import { BigMap } from './hud/bigmap.ts';
 import { buildBasePlane, isMajor, isStreet } from './world/ground.ts';
 import { LampLights } from './world/props.ts';
-import { STEP, createPhysics } from './world/physics.ts';
+import { STEP, createPhysics, stepWorld } from './world/physics.ts';
 import { Streamer } from './world/streamer.ts';
 import { buildLandmarks, neighbourhood } from './world/landmarks.ts';
 import { CARS, type CarSpec, axleHeight, restLength } from './vehicle/cars.ts';
@@ -24,7 +24,8 @@ import { Sound } from './audio/sound.ts';
 import { Music } from './audio/music.ts';
 
 async function boot() {
-  const quality = pickQuality();
+  const gpu = detectGpu();
+  const quality = pickQuality(gpu);
   // Saved progress, unless the address asks for a particular start (?x=&z=) or a clean one (?fresh).
   const saved = query.has('x') || query.has('fresh') ? null : loadProgress();
   const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -53,7 +54,7 @@ async function boot() {
   const models = new Map<string, Promise<CarModel>>();
   const hud = new Hud(grid.attribution, (mode) => setCamera(mode), () => void switchCar());
   const lampLights = new LampLights(scene, [], quality.lampLights);
-  const streamer = new Streamer(grid, area, scene, world, quality.treeDensity, quality.viewDistance);
+  const streamer = new Streamer(grid, area, scene, world, quality.treeDensity, quality.drawDistance, quality.detailDistance);
   let booting = true, built = 0;
   streamer.onChange = (added, removed) => {
     if (added && booting) setLoading(`Building the city… ${++built} blocks of Delhi`, false, 0.18 + Math.min(0.7, built * 0.07));
@@ -86,6 +87,9 @@ async function boot() {
   // back exactly where the car was left, or on a road near the asked-for spot
   const start = saved ? { x: saved.x, z: saved.z, heading: saved.heading } : spawnAt(startX, startZ);
   booting = false;
+  streamer.budget.ms = 4; // from here on the car is being driven: building takes only a sliver of each frame
+  streamer.budget.worst = 0;
+  streamer.cull(start.x, start.z);
   if (query.has('h')) start.heading = THREE.MathUtils.degToRad(Number(query.get('h')));
 
   setLoading('Bringing the car round…', false, 0.92);
@@ -133,6 +137,8 @@ async function boot() {
   carLamps.attach(model);
   let headlights: boolean | null = saved?.headlights ?? null;
   let wasDark = false;
+  /** seconds the car has lain on its side or roof; the way back is told once it has come to rest there */
+  let overTime = 0;
 
   function setCamera(mode: CameraMode) {
     director.setMode(mode);
@@ -239,7 +245,9 @@ async function boot() {
   readPose(previous);
 
   const axle = new THREE.Vector3(-1, 0, 0);
-  const perf = { fps: 0, ms: 0, worst: 0, frames: 0, time: 0, peak: 0, drawCalls: 0, triangles: 0 };
+  // `cpu` is the part of each frame this page's own code takes (physics, and telling the graphics card what to
+  // draw); the rest of the frame is the graphics card drawing it, or waiting for the screen.
+  const perf = { fps: 0, ms: 0, worst: 0, frames: 0, time: 0, peak: 0, drawCalls: 0, triangles: 0, cpu: 0, busy: 0 };
   let last = performance.now();
   let lag = 0;
   let roadTimer = 0;
@@ -277,6 +285,58 @@ async function boot() {
     });
     qualityRow.append(b);
   }
+  // Menu: which graphics card the browser is drawing on, and what to do when it is the wrong one.
+  const otherCard = gpu.kind === 'integrated' && /Windows/.test(navigator.userAgent);
+  const gpuAdvice =
+    gpu.kind === 'software' ? 'No graphics card is in use: the browser is drawing on the processor, which is very slow. Turn on hardware (graphics) acceleration in the browser settings and restart it.'
+    : otherCard ? 'This is the small graphics chip built into the processor. If this computer also has an NVIDIA or AMD card, Windows is keeping the browser off it: follow the steps below. A web page cannot make that choice itself.'
+    : gpu.kind === 'integrated' ? 'This is the small graphics chip built into the processor, so the game starts on the Low preset.'
+    : 'The game asks the browser for the fastest graphics card, and this is the one it was given.';
+  document.getElementById('gpu-name')!.textContent = gpu.name || 'The browser will not say';
+  document.getElementById('gpu-hint')!.textContent = gpuAdvice;
+  // The steps themselves, for anyone on a computer: they are the same whichever card is in use now.
+  const ua = navigator.userAgent;
+  const os = /Windows/.test(ua) ? 'windows' : /Mac OS X/.test(ua) && !matchMedia('(pointer: coarse)').matches ? 'mac' : /Linux/.test(ua) && !/Android/.test(ua) ? 'linux' : null;
+  if (os) {
+    const [browser, exe] =
+      'brave' in navigator ? ['Brave', 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe']
+      : /Edg\//.test(ua) ? ['Edge', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe']
+      : /OPR\//.test(ua) ? ['Opera', '%LocalAppData%\\Programs\\Opera\\opera.exe']
+      : /Firefox\//.test(ua) ? ['Firefox', 'C:\\Program Files\\Mozilla Firefox\\firefox.exe']
+      : ['Chrome', 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'];
+    const intro: Record<string, string> = {
+      windows: 'For laptops and PCs with two graphics cards (a built-in one and an NVIDIA or AMD one). Windows gives browsers the slow one unless told otherwise. With only one card there is nothing to change.',
+      mac: 'For MacBooks with two graphics cards (older Intel models). Macs with Apple chips have one, and there is nothing to change.',
+      linux: 'For laptops with two graphics cards (a built-in one and an NVIDIA or AMD one).',
+    };
+    const steps: Record<string, string[]> = {
+      windows: [
+        'Open Windows <b>Settings › System › Display › Graphics</b>.',
+        `If ${browser} is not in the list of apps, choose <b>Add desktop app</b> (or <b>Browse</b>) and pick <code>${exe}</code>`,
+        `Click ${browser} in the list, then <b>Options</b> (or the <b>GPU preference</b> menu), choose <b>High performance</b> and save.`,
+        `Close every ${browser} window and open it again. The change only takes effect on a fresh start.`,
+        'Come back to this menu: the card named above should now be the NVIDIA or AMD one. Then set the preset to Auto.',
+        'On a laptop, plug in the charger: many slow the graphics card down on battery.',
+      ],
+      mac: [
+        'Open <b>System Settings › Battery › Options</b> (older macOS: System Preferences › Battery).',
+        'Turn <b>Automatic graphics switching</b> off.',
+        `Quit ${browser} completely (Cmd+Q) and open it again.`,
+        'Come back to this menu and check the card named above.',
+      ],
+      linux: [
+        `Close every ${browser} window.`,
+        `Start ${browser} on the fast card. NVIDIA: <code>__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia ${browser.toLowerCase()}</code> · AMD: <code>DRI_PRIME=1 ${browser.toLowerCase()}</code> (the command name may differ on your system).`,
+        'Come back to this menu and check the card named above.',
+      ],
+    };
+    const box = document.getElementById('gpu-steps') as HTMLDetailsElement;
+    document.getElementById('gpu-steps-intro')!.textContent = intro[os];
+    document.getElementById('gpu-steps-list')!.innerHTML = steps[os].map((t) => `<li>${t}</li>`).join('');
+    box.hidden = false;
+    box.open = otherCard; // already open for the people who most likely need it
+  }
+
   document.getElementById('start-over')!.addEventListener('click', () => {
     saving = false;
     clearProgress();
@@ -333,6 +393,7 @@ async function boot() {
   }
 
   renderer.setAnimationLoop((now: number) => {
+    const began = performance.now();
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
 
@@ -349,7 +410,7 @@ async function boot() {
       previous.p.copy(current.p);
       previous.q.copy(current.q);
       vehicle.update(input, STEP);
-      world.step();
+      stepWorld(world);
       readPose(current);
       lag -= STEP;
       steps++;
@@ -363,21 +424,28 @@ async function boot() {
     }
     sound.setPaused(paused);
     sound.setHorn(!bigmap.open && keys.held('KeyH'));
-    const v = vehicle.body.linvel(), h = vehicle.heading;
-    sound.update(dt, vehicle.speed, input.throttle, Math.abs(v.x * Math.cos(h) - v.z * Math.sin(h)), vehicle.braking);
+    // tyres at their limit come through the controller as a light buzz, the anti-lock as a harder one
+    if (steps && (vehicle.skid > 0.2 || vehicle.abs)) keys.rumble(Math.max(vehicle.skid * 0.35, vehicle.abs ? 0.3 : 0), 60);
+    sound.update(dt, vehicle.speed, vehicle.wheelSpeed, input.throttle, vehicle.skid);
     streamer.sync();
     const blend = lag / STEP;
     model.group.position.lerpVectors(previous.p, current.p, blend);
     model.group.quaternion.slerpQuaternions(previous.q, current.q, blend);
+    streamer.cull(model.group.position.x, model.group.position.z);
 
     const spec = model.spec;
     model.wheels.forEach((w, i) => {
       const length = vehicle.controller.wheelSuspensionLength(i) ?? restLength(spec);
       w.pivot.position.y = axleHeight(spec) - length + w.lift;
       w.pivot.rotation.y = vehicle.controller.wheelSteering(i) ?? 0;
-      w.spin.quaternion.setFromAxisAngle(axle, vehicle.controller.wheelRotation(i) ?? 0);
+      w.spin.quaternion.setFromAxisAngle(axle, vehicle.wheelAngle[i]);
     });
     model.setBraking(vehicle.braking);
+    if (!paused && vehicle.isFlipped && Math.abs(vehicle.speed) < 2) {
+      const before = overTime;
+      overTime += dt;
+      if (before < 1.5 && overTime >= 1.5) hud.say('Rolled it. Press R (B on a controller) to get back on the road', 5000);
+    } else if (!vehicle.isFlipped) overTime = 0;
 
     daynight.update(paused ? 0 : dt);
     if (gps.update(paused ? 0 : dt, model.group.position)) hud.say('You have arrived');
@@ -411,19 +479,23 @@ async function boot() {
     if (firstFrame) {
       firstFrame = false;
       hideLoading();
+      if (gpu.kind === 'software' || otherCard) hud.say(`Drawing on ${gpu.name}: slow graphics. Esc › Graphics says how to use a faster card.`, 9000);
     }
     perf.frames++;
     perf.time += dt;
     perf.peak = Math.max(perf.peak, dt);
+    perf.busy += performance.now() - began;
     if (perf.time >= 0.5) {
       perf.fps = perf.frames / perf.time;
       perf.ms = (perf.time / perf.frames) * 1000;
       perf.worst = perf.peak * 1000;
-      perf.frames = perf.time = perf.peak = 0;
+      perf.cpu = perf.busy / perf.frames;
+      perf.frames = perf.time = perf.peak = perf.busy = 0;
       perf.drawCalls = renderer.info.render.drawCalls;
       perf.triangles = renderer.info.render.triangles;
       hud.setStats(
-        `<b>${perf.fps.toFixed(0)}</b> fps  ${perf.ms.toFixed(1)} ms  worst ${perf.worst.toFixed(0)} ms\n` +
+        `<b>${perf.fps.toFixed(0)}</b> fps  ${perf.ms.toFixed(1)} ms  worst ${perf.worst.toFixed(0)} ms  (game code ${perf.cpu.toFixed(1)} ms)\n` +
+          `${gpu.name || 'unknown graphics card'}\n` +
           `${backendName(renderer)} · ${quality.name} · ${renderer.domElement.width}×${renderer.domElement.height}\n` +
           `${perf.drawCalls} draws · ${(perf.triangles / 1000).toFixed(0)}k tris`,
       );
@@ -462,7 +534,7 @@ async function boot() {
           car: model.spec.id, camera: director.mode, x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2),
           hour: +daynight.hour.toFixed(2), night: +daynight.night.toFixed(2),
           heading: +THREE.MathUtils.radToDeg(vehicle.heading).toFixed(1), kmh: +(vehicle.speed * 3.6).toFixed(1), flipped: vehicle.isFlipped,
-          fps: +perf.fps.toFixed(1), ms: +perf.ms.toFixed(2), backend: backendName(renderer), quality: quality.name,
+          fps: +perf.fps.toFixed(1), ms: +perf.ms.toFixed(2), cpuMs: +perf.cpu.toFixed(2), backend: backendName(renderer), gpu: gpu.name, quality: quality.name,
           drawCalls: perf.drawCalls, triangles: perf.triangles, cells: streamer.cells.size, buildings: streamer.tiles.reduce((n, t) => n + t.buildings.length, 0), knocked: streamer.awake,
         };
       },

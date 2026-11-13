@@ -140,7 +140,8 @@ export class CameraDirector {
       fov = 32;
       near = 10;
     } else if (this.mode === 'chase') {
-      this.yaw += shortAngle(heading - this.yaw) * (this.snap ? 1 : damp(5, dt));
+      // in a slide the camera sits part way between where the nose points and where the car is going, so the angle shows
+      this.yaw += shortAngle(heading + vehicle.drift * 0.45 - this.yaw) * (this.snap ? 1 : damp(5, dt));
       const back = (spec.length * 1.25 + 1.2 + clamp(speed, 0, 60) * 0.012) * this.chaseZoom;
       const pivot = new THREE.Vector3(car.position.x, ground + spec.height + 0.3, car.position.z);
       // orbit the pivot by the mouse-look angles; at rest this is the usual spot behind and above

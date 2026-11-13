@@ -58,13 +58,39 @@ export function cached<T extends object>(key: string, make: () => T): T {
 export const isShared = (o: object) => shared.has(o);
 
 /**
- * Lets the renderer skip an instanced mesh that is off screen or outside a shadow cascade, which with several
- * map cells loaded is most of them. Bounds cover every instance, padded for furniture that gets knocked about.
+ * Shares the main thread between a long job and the picture. The job checks `due` inside its loops and awaits
+ * `wait()` when it is: the job then carries on in the next frame, so no single frame is held for long.
  */
-export function cullable(mesh: { computeBoundingSphere(): void; boundingSphere: { radius: number } | null; frustumCulled: boolean }) {
-  mesh.computeBoundingSphere();
-  if (mesh.boundingSphere) mesh.boundingSphere.radius += 25;
-  mesh.frustumCulled = true;
+export class Budget {
+  /** milliseconds the job may run before it should give the frame back */
+  ms: number;
+  /** the longest the job has held the main thread in one go, ms */
+  worst = 0;
+  private start = performance.now();
+
+  constructor(ms: number) {
+    this.ms = ms;
+  }
+
+  get due() {
+    return performance.now() - this.start > this.ms;
+  }
+
+  /** The job is starting again after a pause of its own (a download, say). */
+  restart() {
+    this.start = performance.now();
+  }
+
+  /** The job has finished, or reached a point where it stops holding the frame. */
+  done() {
+    this.worst = Math.max(this.worst, performance.now() - this.start);
+  }
+
+  async wait() {
+    this.done();
+    await new Promise(requestAnimationFrame);
+    this.restart();
+  }
 }
 
 /** localStorage that never throws: blocked storage (private windows) just means nothing is remembered. */

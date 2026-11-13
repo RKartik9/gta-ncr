@@ -1,7 +1,8 @@
 import * as THREE from 'three/webgpu';
 import type { Road, Tile } from './tile.ts';
 import { GeoBuilder, polygon, ribbon } from './geo.ts';
-import { cached } from '../util.ts';
+import type { Chunks } from './chunks.ts';
+import { type Budget, cached } from '../util.ts';
 import { asphaltTexture, grassTexture, groundTexture, pavementTexture } from '../render/textures.ts';
 
 const Y = { grass: 0.015, path: 0.025, pavement: 0.035, road: 0.05, marking: 0.062 };
@@ -108,15 +109,13 @@ export function buildBasePlane(bounds: Tile['bounds']) {
   return baseMesh;
 }
 
-export function buildGround(tile: Tile) {
-  const group = new THREE.Group();
-  group.name = 'ground';
-
+export async function buildGround(tile: Tile, chunks: Chunks, budget: Budget) {
   const grass = new GeoBuilder();
   const water = new GeoBuilder();
   for (const a of tile.areas) {
     if (a.outer.length < 6) continue;
     polygon(a.kind === 'water' ? water : grass, a.outer, [], Y.grass, a.kind === 'water' ? 30 : 9);
+    if (budget.due) await budget.wait();
   }
 
   const pavement = new GeoBuilder();
@@ -128,23 +127,21 @@ export function buildGround(tile: Tile) {
     if (isStreet(r)) ribbon(pavement, r.pts, r.width + 4.4, Y.pavement, 4, true);
     ribbon(asphalt, r.pts, r.width, Y.road, 17, true);
     paintStripes(paint, r, junctions);
+    if (budget.due) await budget.wait();
   }
 
-  const add = (b: GeoBuilder, material: THREE.Material, offset: number, name: string) => {
+  const add = async (b: GeoBuilder, material: THREE.Material, offset: number, name: string) => {
     if (!b.count) return;
     // Coplanar layers a few centimetres apart: the offset stops them flickering at a distance.
     material.polygonOffset = true;
     material.polygonOffsetFactor = -offset;
     material.polygonOffsetUnits = -offset * 4;
-    const mesh = new THREE.Mesh(b.build(), material);
-    mesh.name = name;
-    mesh.receiveShadow = true;
-    group.add(mesh);
+    chunks.addLayer(b, material, name, false);
+    if (budget.due) await budget.wait();
   };
-  add(grass, cached('m-grass', () => new THREE.MeshStandardMaterial({ map: grassTexture(), roughness: 0.95 })), 1, 'grass');
-  add(water, cached('m-water', () => new THREE.MeshStandardMaterial({ color: 0x4a5d58, roughness: 0.15, metalness: 0.2 })), 1, 'water');
-  add(pavement, cached('m-pavement', () => new THREE.MeshStandardMaterial({ map: pavementTexture(), roughness: 0.9 })), 2, 'pavement');
-  add(asphalt, cached('m-asphalt', () => new THREE.MeshStandardMaterial({ map: asphaltTexture(), roughness: 0.82, metalness: 0 })), 3, 'asphalt');
-  add(paint, cached('m-paint', () => new THREE.MeshStandardMaterial({ color: 0xd9d6cb, roughness: 0.7 })), 4, 'markings');
-  return group;
+  await add(grass, cached('m-grass', () => new THREE.MeshStandardMaterial({ map: grassTexture(), roughness: 0.95 })), 1, 'grass');
+  await add(water, cached('m-water', () => new THREE.MeshStandardMaterial({ color: 0x4a5d58, roughness: 0.15, metalness: 0.2 })), 1, 'water');
+  await add(pavement, cached('m-pavement', () => new THREE.MeshStandardMaterial({ map: pavementTexture(), roughness: 0.9 })), 2, 'pavement');
+  await add(asphalt, cached('m-asphalt', () => new THREE.MeshStandardMaterial({ map: asphaltTexture(), roughness: 0.82, metalness: 0 })), 3, 'asphalt');
+  await add(paint, cached('m-paint', () => new THREE.MeshStandardMaterial({ color: 0xd9d6cb, roughness: 0.7 })), 4, 'markings');
 }

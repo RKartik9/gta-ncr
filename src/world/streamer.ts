@@ -5,22 +5,26 @@ import { buildGround } from './ground.ts';
 import { buildBuildings } from './buildings.ts';
 import { buildProps } from './props.ts';
 import { addProps, syncProps } from './physics.ts';
-import { isShared } from '../util.ts';
+import { Chunks } from './chunks.ts';
+import { Instances } from '../render/instances.ts';
+import { Budget, isShared } from '../util.ts';
 
 
 interface Cell {
   key: string;
   tile: Tile;
-  group: THREE.Group;
-  physics: ReturnType<typeof addProps>;
+  chunks: Chunks;
+  physics: ReturnType<typeof addProps>[];
   lampHeads: THREE.Vector3[];
 }
 
-const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+/** A cell is built this far beyond what is drawn, so it is finished before the car can see it. */
+const LOAD_AHEAD = 250;
 
 /**
  * Keeps the map cells round the car loaded, and only those: scenery, physics and minimap piece.
- * Cells are built one at a time, a stage per frame, so driving into new ground does not stall the picture.
+ * Cells are built one at a time and a few milliseconds a frame, so driving into new ground does not stall the
+ * picture; of what is loaded, only the chunks near the car are drawn.
  * ponytail: building runs on the main thread; move the geometry work to a worker if a dense cell still hitches.
  */
 export class Streamer {
@@ -29,8 +33,8 @@ export class Streamer {
   tiles: Tile[] = [];
   /** called after a cell arrives or leaves */
   onChange: (added: Cell | null, removedKey: string | null) => void = () => {};
-  /** slowest time seen for each stage of building a cell, in ms: each stage runs within a single frame */
-  readonly worstMs = { fetch: 0, ground: 0, buildings: 0, props: 0, physics: 0 };
+  /** how long building may hold each frame: generous behind the loading screen, tight while driving */
+  readonly budget = new Budget(40);
   private pending = new Set<string>();
   private queue = Promise.resolve();
   private known: Set<string>;
@@ -39,11 +43,16 @@ export class Streamer {
   private scene: THREE.Scene;
   private world: RAPIER.World;
   private treeDensity: number;
-  /** cells whose nearest edge is closer than this are loaded, and dropped again at twice it (so a cell does not flicker at a border) */
-  private viewDistance: number;
+  /** metres from the car within which scenery is drawn, and within which its close-up detail is */
+  private drawDistance: number;
+  private detailDistance: number;
+  /** cells whose nearest edge is closer than this are loaded, and dropped again well beyond it (so a cell does not flicker at a border) */
+  private loadDistance: number;
 
-  constructor(grid: Grid, dir: string, scene: THREE.Scene, world: RAPIER.World, treeDensity: number, viewDistance: number) {
-    this.viewDistance = viewDistance;
+  constructor(grid: Grid, dir: string, scene: THREE.Scene, world: RAPIER.World, treeDensity: number, drawDistance: number, detailDistance: number) {
+    this.drawDistance = drawDistance;
+    this.detailDistance = Math.min(detailDistance, drawDistance);
+    this.loadDistance = drawDistance + LOAD_AHEAD;
     this.grid = grid;
     this.dir = dir;
     this.scene = scene;
@@ -66,14 +75,11 @@ export class Streamer {
   /** Starts loading what is near (x, z) and drops what is far. Returns when everything near is in. */
   update(x: number, z: number) {
     for (const [key, cell] of this.cells) {
-      const d = this.distance(key, x, z);
-      if (d > this.viewDistance * 2) this.unload(cell);
-      // kept loaded out to twice the view distance so a border does not flicker, but only drawn out to it:
-      // past that it is haze, and drawing it doubled the triangles
-      else cell.group.visible = d < this.viewDistance * 1.1;
+      // kept loaded well past where it would be loaded again, so a border does not flicker
+      if (this.distance(key, x, z) > this.loadDistance + 500) this.unload(cell);
     }
     const want = [...this.known]
-      .filter((k) => !this.cells.has(k) && !this.pending.has(k) && this.distance(k, x, z) < this.viewDistance)
+      .filter((k) => !this.cells.has(k) && !this.pending.has(k) && this.distance(k, x, z) < this.loadDistance)
       .sort((a, b) => this.distance(a, x, z) - this.distance(b, x, z));
     for (const key of want) {
       this.pending.add(key);
@@ -82,51 +88,53 @@ export class Streamer {
     return this.queue;
   }
 
+  /** Every frame: draw only the chunks near (x, z). The rest stay loaded, ready for when the car gets there. */
+  cull(x: number, z: number) {
+    for (const cell of this.cells.values()) cell.chunks.cull(x, z, this.drawDistance, this.detailDistance);
+  }
+
   private async load(key: string) {
-    let t = performance.now();
-    const lap = (stage: keyof Streamer['worstMs']) => {
-      const now = performance.now();
-      this.worstMs[stage] = Math.max(this.worstMs[stage], Math.round(now - t));
-      t = now;
-    };
+    const budget = this.budget;
     const tile = await loadJson<Tile>(`${this.dir}/${key}`);
-    lap('fetch');
-    const group = new THREE.Group();
-    group.name = `cell-${key}`;
-    group.add(buildGround(tile));
-    lap('ground');
-    await nextFrame();
-    t = performance.now();
-    const city = buildBuildings(tile, this.grid.plaza);
-    group.add(city.group);
-    lap('buildings');
-    await nextFrame();
-    t = performance.now();
-    const props = buildProps(tile, this.grid.plaza, this.treeDensity);
-    group.add(props.group);
-    lap('props');
-    await nextFrame();
-    t = performance.now();
-    const physics = addProps(this.world, props.solids, props.loose, city.collider);
-    lap('physics');
-    const cell: Cell = { key, tile, group, physics, lampHeads: props.lampHeads };
+    budget.restart();
+    const chunks = new Chunks();
+    chunks.group.name = `cell-${key}`;
+    await buildGround(tile, chunks, budget);
+    const city = await buildBuildings(tile, this.grid.plaza, chunks, budget);
+    const props = await buildProps(tile, this.grid.plaza, this.treeDensity, chunks, budget);
+    // the solid world goes in a piece at a time as well: one cell is thousands of bodies
+    const physics: Cell['physics'] = [];
+    for (const walls of city.colliders) {
+      if (budget.due) await budget.wait();
+      physics.push(addProps(this.world, [], [], walls));
+    }
+    for (let i = 0; i < props.solids.length; i += 100) {
+      if (budget.due) await budget.wait();
+      physics.push(addProps(this.world, props.solids.slice(i, i + 100), []));
+    }
+    for (const loose of props.loose) {
+      if (budget.due) await budget.wait();
+      physics.push(addProps(this.world, [], [loose]));
+    }
+    chunks.freeze();
+    await budget.wait();
+    const cell: Cell = { key, tile, chunks, physics, lampHeads: props.lampHeads };
     this.pending.delete(key);
     this.cells.set(key, cell);
     this.tiles = [...this.cells.values()].map((c) => c.tile);
-    this.scene.add(group);
+    this.scene.add(chunks.group);
     this.onChange(cell, null);
+    budget.done();
   }
 
   private unload(cell: Cell) {
     this.cells.delete(cell.key);
     this.tiles = [...this.cells.values()].map((c) => c.tile);
-    this.scene.remove(cell.group);
-    cell.physics.dispose();
-    cell.group.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      if ((mesh as THREE.InstancedMesh).isInstancedMesh) (mesh as THREE.InstancedMesh).dispose();
-      if (!isShared(mesh.geometry)) mesh.geometry.dispose();
+    this.scene.remove(cell.chunks.group);
+    for (const p of cell.physics) p.dispose();
+    cell.chunks.traverse((o) => {
+      if (o instanceof Instances) o.dispose();
+      else if ((o as THREE.Mesh).isMesh && !isShared((o as THREE.Mesh).geometry)) (o as THREE.Mesh).geometry.dispose();
     });
     this.onChange(null, cell.key);
   }
@@ -138,7 +146,7 @@ export class Streamer {
 
   get awake() {
     let n = 0;
-    for (const c of this.cells.values()) n += c.physics.awake;
+    for (const c of this.cells.values()) for (const p of c.physics) n += p.awake;
     return n;
   }
 

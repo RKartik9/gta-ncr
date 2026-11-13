@@ -18,9 +18,11 @@ export interface Quality {
   /** real lights taken from the street lamps nearest the car; every light costs on every pixel */
   lampLights: number;
   headlightShadow: boolean;
-  /** metres from the car within which map cells are loaded */
-  viewDistance: number;
-  /** thicker haze hides the edge of a shorter view distance */
+  /** metres from the car within which scenery is drawn; map cells are loaded a little beyond it */
+  drawDistance: number;
+  /** metres within which close-up detail is drawn: leaf sprays, street furniture, signals */
+  detailDistance: number;
+  /** haze thick enough that scenery has faded into the sky by the draw distance, so nothing pops in */
   fog: number;
 }
 
@@ -28,20 +30,20 @@ export interface Quality {
 // whole scene again, so they are kept for the top presets.
 const PRESETS: Record<QualityName, Quality> = {
   low: {
-    name: 'low', pixelRatio: 0.75, minPixelRatio: 0.5, maxPixelRatio: 1, shadowCascades: 1, shadowMapSize: 1024, shadowFar: 80,
-    ambientOcclusion: false, bloom: false, msaa: 0, treeDensity: 0.35, anisotropy: 2, lampLights: 2, headlightShadow: false, viewDistance: 380, fog: 0.0018,
+    name: 'low', pixelRatio: 0.75, minPixelRatio: 0.5, maxPixelRatio: 1, shadowCascades: 1, shadowMapSize: 1024, shadowFar: 70,
+    ambientOcclusion: false, bloom: false, msaa: 0, treeDensity: 0.35, anisotropy: 2, lampLights: 2, headlightShadow: false, drawDistance: 240, detailDistance: 90, fog: 0.005,
   },
   medium: {
-    name: 'medium', pixelRatio: 1, minPixelRatio: 0.6, maxPixelRatio: 1.25, shadowCascades: 1, shadowMapSize: 2048, shadowFar: 140,
-    ambientOcclusion: false, bloom: true, msaa: 0, treeDensity: 0.6, anisotropy: 4, lampLights: 4, headlightShadow: false, viewDistance: 480, fog: 0.0013,
+    name: 'medium', pixelRatio: 1, minPixelRatio: 0.6, maxPixelRatio: 1.25, shadowCascades: 1, shadowMapSize: 2048, shadowFar: 120,
+    ambientOcclusion: false, bloom: true, msaa: 0, treeDensity: 0.6, anisotropy: 4, lampLights: 4, headlightShadow: false, drawDistance: 320, detailDistance: 140, fog: 0.0037,
   },
   high: {
-    name: 'high', pixelRatio: 1.25, minPixelRatio: 0.75, maxPixelRatio: 1.5, shadowCascades: 2, shadowMapSize: 2048, shadowFar: 220,
-    ambientOcclusion: false, bloom: true, msaa: 4, treeDensity: 0.85, anisotropy: 8, lampLights: 6, headlightShadow: false, viewDistance: 600, fog: 0.001,
+    name: 'high', pixelRatio: 1.25, minPixelRatio: 0.75, maxPixelRatio: 1.5, shadowCascades: 2, shadowMapSize: 2048, shadowFar: 200,
+    ambientOcclusion: false, bloom: true, msaa: 4, treeDensity: 0.85, anisotropy: 8, lampLights: 6, headlightShadow: false, drawDistance: 420, detailDistance: 220, fog: 0.0029,
   },
   ultra: {
     name: 'ultra', pixelRatio: 2, minPixelRatio: 1, maxPixelRatio: 2, shadowCascades: 3, shadowMapSize: 2048, shadowFar: 320,
-    ambientOcclusion: true, bloom: true, msaa: 4, treeDensity: 1, anisotropy: 16, lampLights: 12, headlightShadow: true, viewDistance: 650, fog: 0.0009,
+    ambientOcclusion: true, bloom: true, msaa: 4, treeDensity: 1, anisotropy: 16, lampLights: 12, headlightShadow: true, drawDistance: 600, detailDistance: 350, fog: 0.002,
   },
 };
 
@@ -50,13 +52,45 @@ export const query = new URLSearchParams(location.search);
 const STORE_KEY = 'delhi-drive:quality';
 const isName = (q: string | null): q is QualityName => !!q && (QUALITY_NAMES as string[]).includes(q);
 
+export interface Gpu {
+  /** the graphics card as the browser names it, or '' when it will not say */
+  name: string;
+  /** software: no graphics card at all, the processor is drawing. integrated: the small one built into the processor. */
+  kind: 'software' | 'integrated' | 'dedicated' | 'unknown';
+}
+
+/**
+ * Which graphics card the browser has given this page. A page can ask for the fast one (the renderer does) but
+ * the browser and the operating system decide: on a laptop with two, Windows hands browsers the slow one unless told otherwise.
+ */
+export function detectGpu(): Gpu {
+  let name = '';
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2', { powerPreference: 'high-performance' });
+    const ext = gl?.getExtension('WEBGL_debug_renderer_info');
+    if (gl && ext) name = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL));
+    gl?.getExtension('WEBGL_lose_context')?.loseContext();
+  } catch {
+    // no WebGL: nothing to go on
+  }
+  // "ANGLE (Intel, Intel(R) UHD Graphics (0x00009A68) Direct3D11 vs_5_0 ps_5_0, D3D11)" -> "Intel(R) UHD Graphics"
+  const angle = /^ANGLE \([^,]*, (.+?)(?: \(0x[0-9a-f]+\))?(?: Direct3D.*| OpenGL.*|, [^,]*)?\)$/i.exec(name);
+  if (angle) name = angle[1];
+  const kind = !name ? 'unknown'
+    : /swiftshader|llvmpipe|software|basic render|warp/i.test(name) ? 'software'
+    : /intel(?!.*\barc\b)|radeon\(tm\) graphics|radeon (r\d|hd|vega)|adreno|mali|powervr/i.test(name) ? 'integrated'
+    : 'dedicated';
+  return { name, kind };
+}
+
 /** The preset to start from when nobody has chosen one: light on phones and small machines, high on big ones. */
-function autoQuality(): QualityName {
+function autoQuality(gpu: Gpu): QualityName {
   const nav = navigator as Navigator & { deviceMemory?: number };
   const touch = matchMedia('(pointer: coarse)').matches;
   const cores = navigator.hardwareConcurrency || 4;
   const memory = nav.deviceMemory ?? 8;
-  if (touch || memory <= 4 || cores <= 4) return 'low';
+  // the graphics card decides far more than the processor: a twelve-core laptop on its built-in graphics is a small machine
+  if (touch || memory <= 4 || cores <= 4 || gpu.kind === 'software' || gpu.kind === 'integrated') return 'low';
   // high (4x MSAA, two shadow cascades) only on big machines; 8-core laptops lagged on it
   if (!('gpu' in navigator) || cores <= 8) return 'medium';
   return 'high';
@@ -85,10 +119,10 @@ export function saveQuality(q: QualityName | 'auto') {
  * ?q=low|medium|high|ultra beats the menu's saved choice, which beats the automatic pick.
  * ?cascades=, ?ao=, ?bloom=, ?msaa=, ?lamps= and ?hls= override single settings for comparisons.
  */
-export function pickQuality(): Quality {
+export function pickQuality(gpu: Gpu): Quality {
   const q = query.get('q');
   const saved = savedQuality();
-  const quality = { ...PRESETS[isName(q) ? q : saved !== 'auto' ? saved : autoQuality()] };
+  const quality = { ...PRESETS[isName(q) ? q : saved !== 'auto' ? saved : autoQuality(gpu)] };
   if (query.has('cascades')) quality.shadowCascades = Number(query.get('cascades'));
   if (query.has('ao')) quality.ambientOcclusion = query.get('ao') !== '0';
   if (query.has('bloom')) quality.bloom = query.get('bloom') !== '0';

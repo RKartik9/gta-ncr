@@ -162,13 +162,16 @@ export class Sound {
   }
 
   /**
-   * Once a frame. `speed` m/s along the nose, `throttle` -1..1, `slip` m/s of sideways skid.
+   * Once a frame. `speed` m/s along the nose, `wheels` m/s the driven wheels are turning at (more than the
+   * car's speed when they spin), `throttle` -1..1, `skid` 0..1 how hard the tyres are sliding.
    */
-  update(dt: number, speed: number, throttle: number, slip: number, braking: boolean) {
+  update(dt: number, speed: number, wheels: number, throttle: number, skid: number) {
     this.crashCooldown -= dt;
     if (!this.ctx || this.paused) return;
     const t = this.ctx.currentTime;
-    const v = Math.abs(speed);
+    const road = Math.abs(speed);
+    // the engine turns with the wheels: spin them and the revs climb though the car has hardly moved
+    const v = Math.max(road, Math.abs(wheels));
     const gas = Math.max(0, speed < -0.5 ? -throttle : throttle);
 
     // Automatic box: shift up near the top of a gear, down well below it, so it does not hunt.
@@ -188,13 +191,12 @@ export class Sound {
       e.gain.gain.setTargetAtTime(0.32 + 0.3 * gas + 0.2 * r, t, 0.06);
     }
 
-    this.wind.gain.gain.setTargetAtTime(Math.min(0.12, v * 0.0025), t, 0.15);
-    this.wind.filter.frequency.setTargetAtTime(250 + v * 12, t, 0.15);
+    this.wind.gain.gain.setTargetAtTime(Math.min(0.12, road * 0.0025), t, 0.15);
+    this.wind.filter.frequency.setTargetAtTime(250 + road * 12, t, 0.15);
 
-    // squeal on a sideways skid, or hard braking at speed
+    // squeal whenever a tyre is sliding: a locked or spinning wheel, a drift
     if (this.skid) {
-      const amount = clamp((slip - 2.5) / 6, 0, 1) + (braking && v > 8 ? 0.45 : 0);
-      this.skid.gain.gain.setTargetAtTime(Math.min(0.9, amount) * Math.min(1, v / 6), t, 0.06);
+      this.skid.gain.gain.setTargetAtTime(Math.min(0.9, skid * 1.2), t, 0.06);
       this.skid.src.playbackRate.setTargetAtTime(0.9 + Math.min(0.2, v / 250), t, 0.1);
     }
   }

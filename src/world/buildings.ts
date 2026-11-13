@@ -1,7 +1,9 @@
 import * as THREE from 'three/webgpu';
 import type { Building, Tile } from './tile.ts';
 import { GeoBuilder, polygon } from './geo.ts';
-import { cached, cullable, hash01, ringArea } from '../util.ts';
+import type { Chunk, Chunks } from './chunks.ts';
+import { type Budget, cached, hash01, ringArea } from '../util.ts';
+import { Instances, instanced } from '../render/instances.ts';
 import { onNight } from '../render/sky.ts';
 import { CLEARINGS } from './landmarks.ts';
 import { type Facade, colonialFacade, colonnadeTexture, glassFacade, lutyensFacade, officeFacade, plasterFacade, roofTexture, sandstoneFacade, shopfrontTexture } from '../render/textures.ts';
@@ -26,12 +28,11 @@ function centroid(ring: number[]): [number, number] {
 }
 
 export interface BuiltCity {
-  group: THREE.Group;
-  /** wall triangles for the physics world */
-  collider: { vertices: Float32Array; indices: Uint32Array };
+  /** wall triangles for the physics world, a set per chunk so no single one takes long to add */
+  colliders: { vertices: Float32Array; indices: Uint32Array }[];
 }
 
-export function buildBuildings(tile: Tile, plaza: [number, number]): BuiltCity {
+export async function buildBuildings(tile: Tile, plaza: [number, number], chunks: Chunks, budget: Budget): Promise<BuiltCity> {
   const facades: Record<Exclude<Style, 'shed'>, Facade> = cached('facades', () => ({
     colonial: colonialFacade(),
     office: officeFacade(),
@@ -50,8 +51,7 @@ export function buildBuildings(tile: Tile, plaza: [number, number]): BuiltCity {
   const shops = new GeoBuilder(true);
   const arcade = new GeoBuilder(true);
   const roofs = new GeoBuilder(true);
-  const colV: number[] = [];
-  const colI: number[] = [];
+  const colliders = new Map<Chunk, { v: number[]; i: number[] }>();
   const tanks: THREE.Matrix4[] = [];
 
   const styleOf = (b: Building, cx: number, cz: number): Style => {
@@ -107,8 +107,13 @@ export function buildBuildings(tile: Tile, plaza: [number, number]): BuiltCity {
   };
 
   for (const b of tile.buildings) {
+    if (budget.due) await budget.wait();
     const [cx, cz] = centroid(b.outer);
     if (CLEARINGS.some(([x, z, r]) => Math.hypot(cx - x, cz - z) < r)) continue;
+    const chunk = chunks.at(cx, cz);
+    let col = colliders.get(chunk);
+    if (!col) colliders.set(chunk, (col = { v: [], i: [] }));
+    const colV = col.v, colI = col.i;
     const style = styleOf(b, cx, cz);
     const h = hash01(b.id * 7 + 1);
     const shade = 0.86 + h * 0.18;
@@ -158,15 +163,10 @@ export function buildBuildings(tile: Tile, plaza: [number, number]): BuiltCity {
     }
   }
 
-  const group = new THREE.Group();
-  group.name = 'buildings';
-  const add = (g: GeoBuilder, material: THREE.Material, name: string) => {
+  const add = async (g: GeoBuilder, material: THREE.Material, name: string) => {
     if (!g.count) return;
-    const mesh = new THREE.Mesh(g.build(), material);
-    mesh.name = name;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    group.add(mesh);
+    chunks.addLayer(g, material, name, true);
+    if (budget.due) await budget.wait();
   };
   const facadeMaterial = (f: Facade, envMapIntensity = 1, glow = 2.2) => cached(`m-facade-${f.map.uuid}`, () => {
     const m = new THREE.MeshStandardMaterial({
@@ -176,26 +176,24 @@ export function buildBuildings(tile: Tile, plaza: [number, number]): BuiltCity {
     onNight((n) => (m.emissiveIntensity = glow * n));
     return m;
   });
-  add(walls.colonial, facadeMaterial(facades.colonial, 1, 1.3), 'walls-colonial');
-  add(walls.office, facadeMaterial(facades.office), 'walls-office');
-  add(walls.glass, facadeMaterial(facades.glass, 1.3, 1.6), 'walls-glass');
-  add(walls.plaster, facadeMaterial(facades.plaster, 1, 1.8), 'walls-plaster');
-  add(walls.lutyens, facadeMaterial(facades.lutyens, 1, 1.2), 'walls-lutyens');
-  add(walls.sandstone, facadeMaterial(facades.sandstone, 1, 1.4), 'walls-sandstone');
-  add(walls.shed, cached('m-shed', () => new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.5, vertexColors: true })), 'walls-shed');
-  add(shops, facadeMaterial(shop, 1, 3), 'shopfronts');
-  add(arcade, facadeMaterial(colonnade, 1, 3.5), 'colonnade');
-  add(roofs, cached('m-roof', () => new THREE.MeshStandardMaterial({ map: roofTexture(), roughness: 0.95, vertexColors: true })), 'roofs');
+  await add(walls.colonial, facadeMaterial(facades.colonial, 1, 1.3), 'walls-colonial');
+  await add(walls.office, facadeMaterial(facades.office), 'walls-office');
+  await add(walls.glass, facadeMaterial(facades.glass, 1.3, 1.6), 'walls-glass');
+  await add(walls.plaster, facadeMaterial(facades.plaster, 1, 1.8), 'walls-plaster');
+  await add(walls.lutyens, facadeMaterial(facades.lutyens, 1, 1.2), 'walls-lutyens');
+  await add(walls.sandstone, facadeMaterial(facades.sandstone, 1, 1.4), 'walls-sandstone');
+  await add(walls.shed, cached('m-shed', () => new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.5, vertexColors: true })), 'walls-shed');
+  await add(shops, facadeMaterial(shop, 1, 3), 'shopfronts');
+  await add(arcade, facadeMaterial(colonnade, 1, 3.5), 'colonnade');
+  await add(roofs, cached('m-roof', () => new THREE.MeshStandardMaterial({ map: roofTexture(), roughness: 0.95, vertexColors: true })), 'roofs');
 
-  if (tanks.length) {
-    const tankGeo = cached('g-tank', () => new THREE.CylinderGeometry(0.62, 0.66, 1.5, 12).translate(0, 0.95, 0));
-    const mesh = new THREE.InstancedMesh(tankGeo, cached('m-tank', () => new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.45 })), tanks.length);
-    tanks.forEach((m, i) => mesh.setMatrixAt(i, m));
+  const tankGeo = cached('g-tank', () => new THREE.CylinderGeometry(0.62, 0.66, 1.5, 12).translate(0, 0.95, 0));
+  for (const [chunk, list] of chunks.bucket(tanks, (m) => [m.elements[12], m.elements[14]])) {
+    const mesh = new Instances(tankGeo, cached('m-tank', () => instanced(new THREE.MeshStandardNodeMaterial({ color: 0x141416, roughness: 0.45 }))), list);
     mesh.name = 'water-tanks';
     mesh.castShadow = true;
-    cullable(mesh);
-    group.add(mesh);
+    chunk.near.add(mesh);
   }
 
-  return { group, collider: { vertices: new Float32Array(colV), indices: new Uint32Array(colI) } };
+  return { colliders: [...colliders.values()].filter((c) => c.i.length).map((c) => ({ vertices: new Float32Array(c.v), indices: new Uint32Array(c.i) })) };
 }
