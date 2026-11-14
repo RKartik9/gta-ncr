@@ -38,7 +38,6 @@ export class CameraDirector {
   private orbitYaw = 0.6;
   private orbitPitch = 0.32;
   private orbitDistance = 11;
-  private idle = 10;
 
   // mouse look: drag to look round the car (or round the cabin), wheel to pull the chase camera in and out
   private lookYaw = 0;
@@ -68,7 +67,6 @@ export class CameraDirector {
       e.preventDefault();
       if (this.mode === 'drone') {
         this.orbitDistance = clamp(this.orbitDistance * Math.exp(e.deltaY * 0.001), 4, 260);
-        this.idle = 0;
       } else if (this.mode === 'chase') this.chaseZoom = clamp(this.chaseZoom * Math.exp(e.deltaY * 0.001), 0.6, 3);
     }, { passive: false });
   }
@@ -79,7 +77,6 @@ export class CameraDirector {
     if (this.mode === 'drone') {
       this.orbitYaw -= dx * 0.005;
       this.orbitPitch = clamp(this.orbitPitch + dy * 0.004, 0.03, 1.45);
-      this.idle = 0;
       return;
     }
     const inside = this.mode === 'hood' || this.mode === 'cockpit';
@@ -126,13 +123,11 @@ export class CameraDirector {
 
     if (this.mode === 'top') {
       // Straight down from high up with a long lens: the classic view, and towers lean only slightly.
-      const height = 62 + clamp(Math.abs(speed), 0, 50) * 1.5 - this.lookPitch * 30;
-      const ahead = clamp(speed, -10, 50) * 0.7;
-      const target = new THREE.Vector3(car.position.x + fwd.x * ahead, ground, car.position.z + fwd.z * ahead);
-      const k = this.snap ? 1 : damp(4, dt);
-      this.look.lerp(target, this.snap ? 1 : k);
-      this.pos.lerp(new THREE.Vector3(target.x, ground + height, target.z), k);
-      this.yaw = this.snap ? heading : this.yaw + shortAngle(heading - this.yaw) * damp(3, dt);
+      // Fixed height, centred on the car: nothing moves by itself, so the road stays readable.
+      const height = 62 - this.lookPitch * 30;
+      this.look.set(car.position.x, ground, car.position.z);
+      this.pos.set(car.position.x, ground + height, car.position.z);
+      this.yaw = heading;
       cam.position.copy(this.pos);
       const spin = this.yaw + this.lookYaw;
       cam.up.set(Math.sin(spin), 0, Math.cos(spin)); // the car's nose points up the screen, unless turned by the mouse
@@ -140,21 +135,16 @@ export class CameraDirector {
       fov = 32;
       near = 10;
     } else if (this.mode === 'chase') {
-      // in a slide the camera sits part way between where the nose points and where the car is going, so the angle shows
-      this.yaw += shortAngle(heading + vehicle.drift * 0.45 - this.yaw) * (this.snap ? 1 : damp(5, dt));
-      const back = (spec.length * 1.25 + 1.2 + clamp(speed, 0, 60) * 0.012) * this.chaseZoom;
+      // Locked behind the car at a fixed distance and angle. It used to swing with slides, pull back with speed
+      // and jump in front of walls, all of which made the car hard to place on the road.
+      this.yaw = heading;
+      const back = (spec.length * 1.25 + 1.2) * this.chaseZoom;
       const pivot = new THREE.Vector3(car.position.x, ground + spec.height + 0.3, car.position.z);
       // orbit the pivot by the mouse-look angles; at rest this is the usual spot behind and above
       const yaw = this.yaw + this.lookYaw;
       const pitch = Math.atan2(spec.height * 0.75 + 1.05 - spec.height - 0.3, back) + this.lookPitch;
       const want = new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)).multiplyScalar(back).add(pivot);
       want.y = Math.max(want.y, ground + 0.4);
-      // Pull in when a wall is between the camera and the car.
-      const dir = want.clone().sub(pivot);
-      const dist = dir.length();
-      dir.divideScalar(dist);
-      const hit = vehicle.castRay(pivot, dir, dist + 0.4);
-      if (hit !== null) want.copy(pivot).addScaledVector(dir, Math.max(1.2, hit - 0.4));
       // Smoothing the world position made the camera lag v/k behind the car: 8 m at top speed. Smoothing the
       // offset from the car instead keeps the distance steady at any speed and still eases bumps and turns.
       want.sub(pivot);
@@ -164,7 +154,7 @@ export class CameraDirector {
       cam.position.copy(this.pos);
       const lead = 2.5 * Math.max(0, Math.cos(this.lookYaw));
       cam.lookAt(car.position.x + fwd.x * lead, ground + spec.height * 0.72, car.position.z + fwd.z * lead);
-      fov = 56 + clamp(Math.abs(speed), 0, 70) * 0.1; // a hint of speed without shrinking the car away
+      fov = 56;
     } else if (this.mode === 'hood' || this.mode === 'cockpit') {
       // Bolted to the car, so it leans and pitches with the body.
       const [x, y, z] = this.mode === 'hood' ? spec.hoodCamera : spec.cockpitCamera;
@@ -175,7 +165,7 @@ export class CameraDirector {
       // look direction in car space, turned by the mouse: head turns, not a camera on a pole
       const dir = new THREE.Vector3(0, -drop + Math.tan(this.lookPitch), 1).applyAxisAngle(UP, this.lookYaw).normalize();
       cam.lookAt(car.localToWorld(new THREE.Vector3(x, y - ride, z).addScaledVector(dir, 12)));
-      fov = this.mode === 'hood' ? 66 + clamp(Math.abs(speed), 0, 70) * 0.16 : 70;
+      fov = this.mode === 'hood' ? 66 : 70;
       near = this.mode === 'hood' ? 0.1 : 0.06;
     } else if (this.mode === 'cinematic') {
       this.cutAge += dt;
@@ -212,8 +202,6 @@ export class CameraDirector {
       const want = clamp(THREE.MathUtils.radToDeg(2 * Math.atan(7.5 / Math.max(6, distance))), 14, 58);
       fov = this.snap ? want : lerp(this.fov, want, damp(4, dt));
     } else {
-      this.idle += dt;
-      if (this.idle > 4) this.orbitYaw += dt * 0.12; // drifts round the car when left alone
       const target = new THREE.Vector3(car.position.x, ground + spec.height * 0.6, car.position.z);
       const c = Math.cos(this.orbitPitch);
       const yaw = heading + Math.PI + this.orbitYaw;
@@ -244,10 +232,6 @@ export class CameraDirector {
     this.camera.updateProjectionMatrix();
     this.onLensChange();
   }
-}
-
-function shortAngle(a: number) {
-  return Math.atan2(Math.sin(a), Math.cos(a));
 }
 
 function rand(n: number) {

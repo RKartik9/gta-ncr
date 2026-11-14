@@ -127,8 +127,10 @@ export class Keyboard {
     this.pad.steer = -stick(gp.axes[0] ?? 0) || dpad(14) - dpad(15);
     this.pad.handbrake = !!b(HANDBRAKE)?.pressed;
     this.raw = { x: stick(gp.axes[0] ?? 0), y: stick(gp.axes[1] ?? 0), rt: trigger(RT), lt: trigger(LT) };
-    this.look.x = stick(gp.axes[2] ?? 0);
-    this.look.y = stick(gp.axes[3] ?? 0);
+    // only on the standard layout: elsewhere axes 2 and 3 are often the triggers, and the view swung with the throttle
+    const std = gp.mapping === 'standard';
+    this.look.x = std ? stick(gp.axes[2] ?? 0) : 0;
+    this.look.y = std ? stick(gp.axes[3] ?? 0) : 0;
   }
 
   /** A short shake, where the controller can. */
