@@ -4,6 +4,8 @@ export interface CarSpec {
   /** folder under public/models holding scene.gltf. Absent: the built-in hatchback. */
   model?: string;
   credit?: string;
+  /** brought in through the garage importer: its file under public/models/<id>/, and how it is to be stood */
+  imported?: { file: string; flip?: boolean; bike?: boolean; seat?: [number, number]; grips?: [number, number, number] };
 
   /** kilograms and metres */
   mass: number;
@@ -180,4 +182,80 @@ export const HATCHBACK: CarSpec = {
   cockpitCamera: [-0.37, 1.2, -0.12],
 };
 
-export const CARS: CarSpec[] = [SIAN, G63];
+// Published figures (3-door, 2.0 petrol): 3.99 x 1.82 x 1.84 m, 2.45 m wheelbase, 226 mm clearance, about 1.75 t, 150 hp,
+// 0-100 km/h in about 10 s, 155 km/h. No model file: it is built in code (`buildCodedCar`).
+export const THAR: CarSpec = {
+  id: 'thar',
+  enginePitch: 0.9,
+  name: 'Mahindra Thar',
+  mass: 1750,
+  length: 3.985,
+  width: 1.82,
+  height: 1.844,
+  groundClearance: 0.226,
+  centreOfMass: 0.72,
+  wheelRadius: 0.39,
+  track: 0.76,
+  axleFront: 1.27,
+  axleRear: -1.18,
+  suspensionRest: 0.32,
+  suspensionStiffness: 24,
+  weightFront: 0.53,
+  antiRoll: 3,
+  antiRollFront: 0.8,
+  // part-time four-wheel drive: on tarmac it is driven from the back
+  driveFront: 0,
+  engineForce: 6500,
+  reverseForce: 4000,
+  brakeDecel: 12,
+  brakeFront: 0.66,
+  topSpeed: 43,
+  reverseSpeed: 9,
+  maxSteer: 0.58,
+  // all-terrain tyres: less grip on the road than a road tyre
+  gripFront: 0.95,
+  gripRear: 1.01,
+  drag: 0.75,
+  downforce: 0,
+  hoodCamera: [0, 1.5, 0.72],
+  cockpitCamera: [-0.4, 1.5, -0.1],
+};
+
+// Published figures (1.5 petrol): 4.30 x 1.79 x 1.64 m, 2.61 m wheelbase, 190 mm clearance, about 1.3 t, 115 hp,
+// 0-100 km/h in about 11 s, 170 km/h. No model file: built in code.
+export const CRETA: CarSpec = {
+  id: 'creta',
+  enginePitch: 1,
+  name: 'Hyundai Creta',
+  mass: 1300,
+  length: 4.3,
+  width: 1.79,
+  height: 1.635,
+  groundClearance: 0.19,
+  centreOfMass: 0.6,
+  wheelRadius: 0.345,
+  // a touch wider than the real 0.78, so the tyres stand just proud of the code-built body
+  track: 0.81,
+  axleFront: 1.28,
+  axleRear: -1.33,
+  suspensionRest: 0.28,
+  suspensionStiffness: 30,
+  weightFront: 0.6,
+  antiRoll: 6,
+  driveFront: 1,
+  engineForce: 4600,
+  reverseForce: 3500,
+  brakeDecel: 13,
+  brakeFront: 0.68,
+  topSpeed: 47,
+  reverseSpeed: 9,
+  maxSteer: 0.56,
+  gripFront: 1.02,
+  gripRear: 1.02,
+  drag: 0.5,
+  downforce: 0,
+  hoodCamera: [0, 1.3, 0.85],
+  cockpitCamera: [-0.38, 1.3, -0.05],
+};
+
+export const CARS: CarSpec[] = [SIAN, G63, THAR, CRETA];

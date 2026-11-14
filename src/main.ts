@@ -8,26 +8,41 @@ import { type Grid, type Tile, loadJson, nearestRoad } from './world/tile.ts';
 import { RoadGraph } from './world/route.ts';
 import { Gps } from './world/gps.ts';
 import { BigMap } from './hud/bigmap.ts';
-import { buildBasePlane, isMajor, isStreet } from './world/ground.ts';
+import { ROAD_HEIGHT, buildBasePlane, isMajor, isStreet } from './world/ground.ts';
 import { LampLights } from './world/props.ts';
 import { STEP, createPhysics, stepWorld } from './world/physics.ts';
 import { Streamer } from './world/streamer.ts';
 import { buildLandmarks, neighbourhood } from './world/landmarks.ts';
 import { CARS, type CarSpec, axleHeight, restLength } from './vehicle/cars.ts';
-import { CarLamps, type CarModel, buildHatchback } from './vehicle/carModel.ts';
+import { loadGarage, loadImported, setupImporter } from './vehicle/garage.ts';
+import { seatRider } from './vehicle/rider.ts';
+import { CarLamps, type CarModel, buildCodedCar, buildHatchback } from './vehicle/carModel.ts';
 import { loadGltfCar } from './vehicle/gltfCar.ts';
 import { Vehicle } from './vehicle/vehicle.ts';
 import { Keyboard } from './vehicle/input.ts';
 import { CAMERA_MODES, CameraDirector, type CameraMode } from './camera/director.ts';
-import { Hud, hideLoading, setLoading } from './hud/hud.ts';
+import { Hud, chooseStart, hideLoading, setLoading } from './hud/hud.ts';
 import { Sound } from './audio/sound.ts';
 import { Music } from './audio/music.ts';
+
+const RESUME = 'delhi-drive:resume';
 
 async function boot() {
   const gpu = detectGpu();
   const quality = pickQuality(gpu);
   // Saved progress, unless the address asks for a particular start (?x=&z=) or a clean one (?fresh).
-  const saved = query.has('x') || query.has('fresh') ? null : loadProgress();
+  const stored = query.has('x') || query.has('fresh') ? null : loadProgress();
+  // The title screen asks: carry on, or a new game. An address that says how to start (any ?option, as the dev
+  // tools use) is not asked, nor is the reload that only changes the graphics preset.
+  let resuming = false;
+  try {
+    resuming = !!sessionStorage.getItem(RESUME);
+    sessionStorage.removeItem(RESUME);
+  } catch {
+    // storage blocked: there is nothing saved to resume either
+  }
+  const asked = query.size === 0 && !resuming;
+  const saved = !asked || (await chooseStart(!!stored)) ? stored : null;
   const canvas = document.getElementById('view') as HTMLCanvasElement;
 
   setLoading('Starting the renderer…', false, 0.05);
@@ -65,11 +80,12 @@ async function boot() {
   const getModel = (spec: CarSpec) => {
     let p = models.get(spec.id);
     if (!p) {
-      p = loadGltfCar(spec).catch((err) => {
+      p = !spec.model && !spec.imported ? Promise.resolve(buildCodedCar(spec)) : (spec.imported ? loadImported(spec) : loadGltfCar(spec)).catch((err) => {
         console.warn(`Could not load the ${spec.name} model, using the stand-in hatchback`, err);
         hud.say(`${spec.name} model missing: using the stand-in`);
-        return buildHatchback();
+        return spec.imported ? buildCodedCar(spec) : buildHatchback();
       });
+      p = p.then(seatRider);
       models.set(spec.id, p);
     }
     return p;
@@ -93,6 +109,8 @@ async function boot() {
   if (query.has('h')) start.heading = THREE.MathUtils.degToRad(Number(query.get('h')));
 
   setLoading('Bringing the car round…', false, 0.92);
+  await loadGarage();
+  setupImporter(() => model.spec);
   let carIndex = Math.max(0, CARS.findIndex((c) => c.id === (query.get('car') ?? saved?.car)));
   let model = await getModel(CARS[carIndex]);
   let vehicle = new Vehicle(world, model.spec, start.x, start.z, start.heading);
@@ -279,6 +297,11 @@ async function boot() {
     b.addEventListener('click', () => {
       saveQuality(q);
       save();
+      try {
+        sessionStorage.setItem(RESUME, '1');
+      } catch {
+        // storage blocked: the title screen will ask
+      }
       const url = new URL(location.href);
       url.searchParams.delete('q');
       location.replace(url);
@@ -369,6 +392,8 @@ async function boot() {
     const ahead = new THREE.Vector3();
     camera.getWorldDirection(ahead);
     for (const spec of CARS) {
+      // a garage may hold any number of imported vehicles: those wait until they are asked for
+      if (spec.imported && spec !== here.spec && spec.id !== here.spec.id) continue;
       const m = await getModel(spec);
       scene.remove(model.group);
       scene.add(m.group);
@@ -430,16 +455,25 @@ async function boot() {
     streamer.sync();
     const blend = lag / STEP;
     model.group.position.lerpVectors(previous.p, current.p, blend);
+    model.group.position.y += ROAD_HEIGHT;
     model.group.quaternion.slerpQuaternions(previous.q, current.q, blend);
     streamer.cull(model.group.position.x, model.group.position.z);
 
     const spec = model.spec;
     model.wheels.forEach((w, i) => {
-      const length = vehicle.controller.wheelSuspensionLength(i) ?? restLength(spec);
+      const n = w.follows ?? i;
+      const length = vehicle.controller.wheelSuspensionLength(n) ?? restLength(spec);
       w.pivot.position.y = axleHeight(spec) - length + w.lift;
-      w.pivot.rotation.y = vehicle.controller.wheelSteering(i) ?? 0;
-      w.spin.quaternion.setFromAxisAngle(axle, vehicle.wheelAngle[i]);
+      // a bike's front wheel is held by a fork that is part of the body: it leans, and does not turn on its own
+      w.pivot.rotation.y = model.lean ? 0 : (vehicle.controller.wheelSteering(n) ?? 0);
+      w.spin.quaternion.setFromAxisAngle(axle, vehicle.wheelAngle[n]);
     });
+    if (model.lean) {
+      // a bike is leant into the corner by as much as would balance it
+      const into = THREE.MathUtils.clamp(-Math.atan((vehicle.speed * vehicle.body.angvel().y) / 9.81), -0.8, 0.8);
+      model.lean.rotation.z += (into - model.lean.rotation.z) * Math.min(1, dt * 6);
+    }
+    if (model.rider) model.rider.visible = director.mode !== 'cockpit';
     model.setBraking(vehicle.braking);
     if (!paused && vehicle.isFlipped && Math.abs(vehicle.speed) < 2) {
       const before = overTime;

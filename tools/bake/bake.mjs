@@ -143,8 +143,13 @@ const bollards = [];
 const busStops = [];
 const stats = { buildings: 0, withHeight: 0, withLevels: 0, guessedHeight: 0, roads: 0, roadKm: 0, namedRoads: 0 };
 
+// Mapped as one 68,000 m² building lying across North Block and the Rashtrapati Bhavan forecourt: it is not there.
+const NOT_THERE = new Set([1218426672]);
+
 function buildingFrom(id, tags, outer, holes) {
-  if (Math.abs(ringArea(outer)) < 6) return;
+  if (Math.abs(ringArea(outer)) < 6 || NOT_THERE.has(id)) return;
+  // Tombs, gates, fort walls, the Jantar Mantar instruments: stone, not a block of flats with lit windows.
+  const historic = !!tags.historic;
   const kind = tags.building === 'yes' ? (tags.amenity || tags.shop || tags.office ? 'commercial' : 'yes') : tags.building;
   let height = num(tags.height);
   const levels = num(tags['building:levels']);
@@ -153,6 +158,9 @@ function buildingFrom(id, tags, outer, holes) {
   else if (levels) {
     stats.withLevels++;
     height = levels * LEVEL_HEIGHT + 1;
+  } else if (historic) {
+    // a stepwell is a pit with a wall round it; the rest are about as tall as they are wide, up to a fort wall's 18 m
+    height = tags.man_made === 'water_well' ? 5 : Math.min(18, Math.max(4, Math.sqrt(Math.abs(ringArea(outer))) * 0.6));
   } else {
     stats.guessedHeight++;
     const big = Math.abs(ringArea(outer)) > 900;
@@ -161,7 +169,7 @@ function buildingFrom(id, tags, outer, holes) {
   }
   buildings.push({
     id, kind, name: tags.name, height: r2(height), minHeight: num(tags.min_height) ?? 0,
-    guessed: !num(tags.height) && !levels, outer, holes,
+    guessed: !num(tags.height) && !levels, outer, holes, ...(historic && { historic }),
   });
 }
 

@@ -6,6 +6,8 @@ import { type Budget, cached } from '../util.ts';
 import { asphaltTexture, grassTexture, groundTexture, pavementTexture } from '../render/textures.ts';
 
 const Y = { grass: 0.015, path: 0.025, pavement: 0.035, road: 0.05, marking: 0.062 };
+/** The tarmac is drawn this far above the flat ground the physics knows; the car is drawn raised by as much, or its tyres sink into the road. */
+export const ROAD_HEIGHT = Y.road;
 
 /** Roads that carry through traffic: these get pavements, lane markings, street trees and lamps. */
 export const isStreet = (r: Road) => r.kind !== 'service' && r.kind !== 'living_street';

@@ -71,6 +71,11 @@ export class Vehicle {
   /** angle between where the nose points and where the car is going, radians, positive when it slides to its left */
   drift = 0;
   private spin = [0, 0, 0, 0];
+  /** how far each tyre is off its heading, as a share of the angle where it grips hardest; from the last step */
+  private slip = [0, 0, 0, 0];
+  /** the handbrake has thrown the car into a slide: stability control stands back until it is straight again */
+  private loose = false;
+  private cut = 0;
   private gas = 0;
   private brake = 0;
   private reverse = false;
@@ -147,7 +152,9 @@ export class Vehicle {
     this.body.setRotation({ x: 0, y: Math.sin(heading / 2), z: 0, w: Math.cos(heading / 2) }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    this.steer = this.gas = this.brake = this.skid = this.drift = this.wheelSpeed = 0;
+    this.steer = this.gas = this.brake = this.skid = this.drift = this.wheelSpeed = this.cut = 0;
+    this.loose = false;
+    this.slip.fill(0);
     this.spin.fill(0);
   }
 
@@ -190,8 +197,12 @@ export class Vehicle {
     // Steering. Less lock at speed, so a held arrow key does not spin the car out. In a slide the wheels are
     // let run towards the way the car is going, as a real car's do when the wheel is let slip through the hands:
     // steering then works from there, which is what makes a slide catchable.
-    this.drift = Math.hypot(v, sideways) > 4 ? Math.atan2(sideways, v) : 0;
+    // Backing up is not a slide: read as one (tail first is 180 degrees of it) the wheels were thrown from lock to
+    // lock and the chase camera swung from side to side.
+    this.drift = Math.hypot(v, sideways) > 4 && !(this.reverse && v < 0) ? Math.atan2(sideways, v) : 0;
     const sliding = clamp((Math.abs(this.drift) - 0.05) / 0.12, 0, 1);
+    if (input.handbrake) this.loose = true;
+    else if (Math.abs(this.drift) < 0.05) this.loose = false;
     // At speed the lock comes down to just past the angle where the tyres grip hardest: any more only scrubs them.
     const least = Math.atan(PEAK_ANGLE) * 1.2;
     const lock = least + (c.maxSteer - least) / (1 + (Math.abs(v) / 13) ** 1.6);
@@ -230,7 +241,13 @@ export class Vehicle {
     const axleShare = (n: number) => (n < 2 ? c.driveFront : 1 - c.driveFront);
     const tread = Math.abs(this.wheelSpeed);
     const top = this.reverse ? c.reverseSpeed : c.topSpeed;
-    const push = tread < top ? this.gas * ((this.reverse ? c.reverseForce : c.engineForce) * (1 - (tread / top) ** 2) + c.drag * tread * tread) : 0;
+    // Stability control, as both real cars have: when the rear tyres are past the angle they grip at (the tail is
+    // coming round) or the fronts well past it (the nose is running wide), the engine is held back until they
+    // bite again. Without it a floored throttle in a corner spun the car, and the turn was lost catching it.
+    // A pull on the handbrake asks for the slide, and switches it off until the car is straight.
+    const over = Math.max(Math.abs(this.slip[2]), Math.abs(this.slip[3])) - 1, wide = Math.max(Math.abs(this.slip[0]), Math.abs(this.slip[1])) - 1.6;
+    this.cut = approach(this.cut, this.loose ? 0 : clamp(Math.max(over, wide) / 0.6, 0, 1), 8 * dt);
+    const push = tread < top ? (1 - this.cut) * this.gas * ((this.reverse ? c.reverseForce : c.engineForce) * (1 - (tread / top) ** 2) + c.drag * tread * tread) : 0;
 
     // Differentials. Left to itself a driven wheel with no weight on it (the inside one in a hard corner) just
     // spins up and wastes the engine; a limited-slip differential drags it back towards its partner's speed,
@@ -267,6 +284,7 @@ export class Vehicle {
         const stop = ((dragTorque + pedalTorque + handTorque) * dt) / inertia;
         w = Math.abs(w) <= stop ? 0 : w - Math.sign(w) * stop;
         this.spin[n] = w;
+        this.slip[n] = 0;
         this.wheelAngle[n] += w * dt;
         treadSum += w * R * share;
         continue;
@@ -288,6 +306,7 @@ export class Vehicle {
       const mu = (front ? c.gripFront : c.gripRear) * clamp(1 - 0.12 * (N / ((c.mass * G) / 4) - 1), 0.75, 1.1);
       const ref = Math.max(Math.abs(vLong), CRAWL);
       const sy = vLat / ref / PEAK_ANGLE;
+      this.slip[n] = Math.abs(vLong) > 3 ? sy : 0;
       const step = dt / SUBSTEPS;
       let fx = 0, fy = 0, slide = 0;
       for (let k = 0; k < SUBSTEPS; k++) {

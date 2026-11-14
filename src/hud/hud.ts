@@ -275,64 +275,37 @@ export class Hud {
   }
 }
 
-const TIPS = [
-  'Connaught Place is two rings of white Georgian colonnades round a park, built in the 1930s.',
-  'The tricolour over Central Park flies on a 63 m mast. You can see it from every radial road.',
-  'Press N for night: the sodium lamps, shop signs and office windows all come on.',
-  'Drag with the mouse to look round, and use the wheel to pull the chase camera back.',
-  'Bins, barricades and parked autos all move when you hit them. Trees and lamp posts do not.',
-  'India Gate stands 42 m tall at the east end of Kartavya Path.',
-  'Lutyens\' Delhi: white bungalows behind deep lawns, and red and buff sandstone ministries.',
-  'Esc pauses the game and opens the controls, the clock and the frame rate.',
-];
-
-/** A strip of Delhi roofline for the loading screen: walk-ups, water tanks, a dome, a tower or two. */
-function skyline(seed: number, colour: string, height: number) {
-  let r = seed;
-  const rnd = () => ((r = (r * 16807) % 2147483647) / 2147483647);
-  const w = 1200;
-  let x = 0, d = '';
-  while (x < w) {
-    const bw = 30 + rnd() * 70, bh = height * (0.25 + rnd() * 0.55);
-    d += `M${x} ${height}V${height - bh}H${x + bw}V${height}Z`;
-    if (rnd() < 0.35) d += `M${x + bw * 0.3} ${height - bh}v-9h10v9Z`; // water tank
-    if (rnd() < 0.08) d += `M${x + bw / 2 - 18} ${height - bh}a18 18 0 0 1 36 0Z`; // dome
-    if (rnd() < 0.06) d += `M${x + bw * 0.4} ${height - bh}V${height - bh - height * 0.3}h${bw * 0.25}V${height - bh}Z`; // tower
-    x += bw + rnd() * 6;
+/**
+ * The title screen's two buttons: carry on from the saved place, or start again. Resolves true for "continue".
+ * With nothing saved there is only the one way in. Nothing is loaded until one is pressed.
+ */
+export function chooseStart(hasSave: boolean): Promise<boolean> {
+  const screen = $('loading');
+  const [go, fresh] = [...screen.querySelectorAll<HTMLButtonElement>('.start button')];
+  if (!hasSave) {
+    go.hidden = true;
+    fresh.textContent = 'Start';
+    fresh.classList.add('primary');
   }
-  return `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${w} ${height}' preserveAspectRatio='none'><path fill='${colour}' d='${d}'/></svg>`)}")`;
+  screen.classList.add('choosing');
+  (hasSave ? go : fresh).focus();
+  return new Promise((resolve) => {
+    for (const b of [go, fresh]) b.addEventListener('click', () => {
+      screen.classList.remove('choosing');
+      resolve(b === go);
+    }, { once: true });
+  });
 }
-
-let tipTimer = 0;
-function startLoadingScreen() {
-  $('skyline-far').style.backgroundImage = skyline(7, '#3a2236', 200);
-  $('skyline-near').style.backgroundImage = skyline(91, '#1b1220', 160);
-  const tip = $('loading-tip');
-  let i = Math.floor(Math.random() * TIPS.length);
-  const next = () => {
-    tip.style.opacity = '0';
-    setTimeout(() => {
-      tip.textContent = TIPS[i++ % TIPS.length];
-      tip.style.opacity = '1';
-    }, 400);
-  };
-  next();
-  tipTimer = window.setInterval(next, 4500);
-}
-startLoadingScreen();
 
 /** `progress` is 0 to 1; left out, the bar stays where it is. */
 export function setLoading(text: string, error = false, progress?: number) {
   const el = $('loading-text');
   el.textContent = text;
   el.classList.toggle('error', error);
-  if (progress !== undefined) $('loading-bar').style.width = `${Math.round(Math.max(0.04, progress) * 100)}%`;
+  if (progress !== undefined) $('loading-bar').style.transform = `scaleX(${Math.max(0.04, progress)})`;
 }
 
 export function hideLoading() {
-  $('loading-bar').style.width = '100%';
-  setTimeout(() => {
-    $('loading').classList.add('done');
-    clearInterval(tipTimer);
-  }, 350);
+  $('loading-bar').style.transform = 'none';
+  setTimeout(() => $('loading').classList.add('done'), 350);
 }

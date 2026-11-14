@@ -8,7 +8,7 @@ import { onNight } from '../render/sky.ts';
 import { CLEARINGS } from './landmarks.ts';
 import { type Facade, colonialFacade, colonnadeTexture, glassFacade, lutyensFacade, officeFacade, plasterFacade, roofTexture, sandstoneFacade, shopfrontTexture } from '../render/textures.ts';
 
-type Style = 'colonial' | 'office' | 'glass' | 'plaster' | 'lutyens' | 'sandstone' | 'shed';
+type Style = 'colonial' | 'office' | 'glass' | 'plaster' | 'lutyens' | 'sandstone' | 'shed' | 'stone';
 
 // Lutyens' bungalow zone, between Rashtrapati Bhavan, India Gate and Khan Market, in map metres from CP (x east, z south).
 const LUTYENS = { x: -700, z: 2700, r: 2300 };
@@ -33,7 +33,7 @@ export interface BuiltCity {
 }
 
 export async function buildBuildings(tile: Tile, plaza: [number, number], chunks: Chunks, budget: Budget): Promise<BuiltCity> {
-  const facades: Record<Exclude<Style, 'shed'>, Facade> = cached('facades', () => ({
+  const facades: Record<Exclude<Style, 'shed' | 'stone'>, Facade> = cached('facades', () => ({
     colonial: colonialFacade(),
     office: officeFacade(),
     glass: glassFacade(),
@@ -46,7 +46,7 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
 
   const walls: Record<Style, GeoBuilder> = {
     colonial: new GeoBuilder(true), office: new GeoBuilder(true), glass: new GeoBuilder(true), plaster: new GeoBuilder(true),
-    lutyens: new GeoBuilder(true), sandstone: new GeoBuilder(true), shed: new GeoBuilder(true),
+    lutyens: new GeoBuilder(true), sandstone: new GeoBuilder(true), shed: new GeoBuilder(true), stone: new GeoBuilder(true),
   };
   const shops = new GeoBuilder(true);
   const arcade = new GeoBuilder(true);
@@ -55,6 +55,7 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
   const tanks: THREE.Matrix4[] = [];
 
   const styleOf = (b: Building, cx: number, cz: number): Style => {
+    if (b.historic) return 'stone';
     if (b.kind === 'roof' || b.kind === 'shed' || b.kind === 'garage') return 'shed';
     const h = hash01(b.id);
     // The white Georgian blocks ring the central park; everything inside the Outer Circle is one of them.
@@ -120,11 +121,13 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
     const tint: [number, number, number] =
       style === 'plaster' ? (PLASTER_TINTS[Math.floor(hash01(b.id * 3) * PLASTER_TINTS.length)].map((c) => c * shade) as [number, number, number])
       : style === 'shed' ? [0.55 * shade, 0.57 * shade, 0.6 * shade]
+      // rubble and sandstone; the Jantar Mantar instruments are washed red
+      : style === 'stone' ? (b.name?.includes('Yantra') ? [0.66 * shade, 0.3 * shade, 0.22 * shade] : [0.7 * shade, 0.54 * shade, 0.4 * shade])
       : [shade, shade, shade];
     const y0 = b.minHeight;
     const top = Math.max(b.height, y0 + 2.5);
-    const facade = style === 'shed' ? null : facades[style];
-    const ground = style === 'shed' || y0 > 0 || top < 6.5 ? null : style === 'colonial' ? colonnade : style === 'office' || style === 'plaster' ? shop : null;
+    const facade = style === 'shed' || style === 'stone' ? null : facades[style];
+    const ground = facade === null || y0 > 0 || top < 6.5 ? null : style === 'colonial' ? colonnade : style === 'office' || style === 'plaster' ? shop : null;
     const groundTop = ground ? y0 + ground.height : y0;
 
     const rings: [number[], boolean][] = [[b.outer, true], ...b.holes.map((r): [number[], boolean] => [r, false])];
@@ -183,6 +186,12 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
   await add(walls.lutyens, facadeMaterial(facades.lutyens, 1, 1.2), 'walls-lutyens');
   await add(walls.sandstone, facadeMaterial(facades.sandstone, 1, 1.4), 'walls-sandstone');
   await add(walls.shed, cached('m-shed', () => new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.5, vertexColors: true })), 'walls-shed');
+  await add(walls.stone, cached('m-stone', () => {
+    // old stonework is floodlit after dark
+    const m = new THREE.MeshStandardMaterial({ roughness: 0.9, vertexColors: true, emissive: 0x9a6a3a, emissiveIntensity: 0 });
+    onNight((n) => (m.emissiveIntensity = 0.3 * n));
+    return m;
+  }), 'walls-stone');
   await add(shops, facadeMaterial(shop, 1, 3), 'shopfronts');
   await add(arcade, facadeMaterial(colonnade, 1, 3.5), 'colonnade');
   await add(roofs, cached('m-roof', () => new THREE.MeshStandardMaterial({ map: roofTexture(), roughness: 0.95, vertexColors: true })), 'roofs');

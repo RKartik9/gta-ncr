@@ -59,6 +59,36 @@ for (const spec of [...CARS, HATCHBACK]) {
   console.log(`  100-0 km/h in ${tStop.toFixed(1)} s over ${(pos().z - zb).toFixed(1)} m (${(27.78 ** 2 / 2 / (pos().z - zb) / 9.81).toFixed(2)} g), anti-lock working ${(abs / steps * 100).toFixed(0)}% of the time, ${Math.abs(pos().x).toFixed(2)} m off line`);
   run(3, { throttle: -1 });
   console.log(`  reverse: ${kmh()} km/h`);
+  // Backing up in a straight line for long enough to reach full reverse speed: it must stay straight, and must not
+  // read as a slide (the camera swings on the slide angle).
+  fresh();
+  let slid = 0;
+  run(8, { throttle: -1 }, undefined, () => (slid = Math.max(slid, Math.abs(car.drift))));
+  console.log(`  8 s in reverse, hands off: ${kmh()} km/h, ${Math.abs(pos().x).toFixed(2)} m off line, slide angle read up to ${(slid * 57.3).toFixed(0)} deg`);
+  if (Math.abs(pos().x) > 0.5 || slid > 0.1) process.exitCode = 1;
+
+  // Turning circle: full lock at a held speed, and from rest with the throttle floored (a key player's U-turn).
+  const circles = [10, 30, 50, 80].map((target) => {
+    fresh(target);
+    let r = 0, n = 0, t = 0;
+    for (; t < 7; t += dt) {
+      car.update({ throttle: car.speed * 3.6 < target ? 1 : 0, steer: 1, handbrake: false }, dt);
+      stepWorld(world);
+      const v = car.body.linvel();
+      if (t > 3) (r += Math.hypot(v.x, v.z) / Math.max(1e-3, Math.abs(car.body.angvel().y)), n++);
+    }
+    return `${target} km/h ${(r / n).toFixed(1)} m`;
+  });
+  fresh();
+  let far = 0;
+  const h1 = car.heading;
+  let swung = 0, prev = h1;
+  const tU = run(20, { throttle: 1, steer: 1 }, () => Math.abs(swung) >= Math.PI, () => {
+    swung += Math.atan2(Math.sin(car.heading - prev), Math.cos(car.heading - prev));
+    prev = car.heading;
+    far = Math.max(far, Math.abs(pos().x));
+  });
+  console.log(`  turning radius at full lock: ${circles.join(', ')}; U-turn from rest, throttle floored: ${far.toFixed(1)} m wide in ${tU.toFixed(1)} s`);
 
   // Flat out in a circle: what the tyres will hold sideways, and whether the car stays on its wheels.
   fresh(90);

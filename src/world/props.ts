@@ -247,7 +247,7 @@ function buildTrees(spots: TreeSpot[], chunks: Chunks) {
 }
 
 /** Soft round falloff for the pool of light a lamp throws on the road. */
-function poolTexture() {
+export function poolTexture() {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const g = c.getContext('2d')!;
@@ -294,7 +294,7 @@ function buildLamps(tile: Tile, onRoad: ReturnType<typeof roadIndex>, chunks: Ch
         // at a junction the kerb of this road is the middle of the one crossing it: no pole there
         if (!inside(tile, x, z) || onRoad(x, z, 0.3)) continue;
         // the arm reaches back over the carriageway
-        q.setFromAxisAngle(up, Math.atan2(dx, dz) + (side < 0 ? -Math.PI / 2 : Math.PI / 2));
+        q.setFromAxisAngle(up, Math.atan2(dx, dz) + (side < 0 ? Math.PI / 2 : -Math.PI / 2)); // `side` was flipped above: it is the other kerb's sign
         matrices.push(new THREE.Matrix4().compose(new THREE.Vector3(x, 0, z), q, new THREE.Vector3(1, 1, 1)));
       }
       carry = (((carry - len) % every) + every) % every;

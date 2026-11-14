@@ -1,0 +1,27 @@
+[
+  {
+    "id": "thar",
+    "name": "Mahindra Thar",
+    "kind": "suv",
+    "length": 3.985,
+    "credit": "THAR 4X4 by MB_Mahesh (Sketchfab), CC BY 4.0",
+    "file": "model.glb"
+  },
+  {
+    "id": "creta",
+    "name": "Hyundai Creta",
+    "kind": "car",
+    "length": 4.3,
+    "credit": "2020 Hyundai ix25 - 2022 Hyundai Creta by Ddiaz Design (Sketchfab), CC BY-NC 4.0",
+    "file": "model.glb"
+  },
+  {
+    "id": "ktm-390-duke",
+    "name": "KTM 390 Duke",
+    "kind": "bike",
+    "length": 2.07,
+    "flip": true,
+    "credit": "Duke 390 by 574lhyglh (Sketchfab), CC BY 4.0",
+    "file": "model.glb"
+  }
+]

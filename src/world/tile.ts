@@ -26,6 +26,8 @@ export interface Building {
   minHeight: number;
   /** true when OpenStreetMap had neither a height nor a level count and the bake had to guess */
   guessed: boolean;
+  /** a tomb, gate, fort wall or other old stonework: no windows, no shopfronts */
+  historic?: boolean;
   outer: number[];
   holes: number[][];
 }

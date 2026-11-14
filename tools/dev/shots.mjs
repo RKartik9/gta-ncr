@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const out = process.argv[2] ?? 'shots';
-const url = process.argv[3] ?? 'http://localhost:5180/';
+// ?fresh: a plain address stops at the title screen and waits for a button
+const url = process.argv[3] ?? 'http://localhost:5180/?fresh';
 const port = 9333;
 const browser = [
   process.env.BROWSER_BIN,

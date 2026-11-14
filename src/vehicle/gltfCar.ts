@@ -13,7 +13,7 @@ const CALLIPER_NAMES = ['CalliperBody_Front_L', 'CalliperBody_Front_R', 'Callipe
  * The Sián arrives as about 1,300 separate parts; drawn one by one, four times a frame
  * (depth pass, colour pass, shadow cascades), that alone would cost more than the city.
  */
-function mergeInto(root: THREE.Object3D, into: THREE.Object3D) {
+export function mergeInto(root: THREE.Object3D, into: THREE.Object3D) {
   root.updateWorldMatrix(true, true);
   into.updateWorldMatrix(true, false);
   const toLocal = new THREE.Matrix4().copy(into.matrixWorld).invert();
@@ -58,7 +58,7 @@ function mergeInto(root: THREE.Object3D, into: THREE.Object3D) {
   }
 }
 
-function tuneMaterials(root: THREE.Object3D) {
+export function tuneMaterials(root: THREE.Object3D) {
   const seen = new Set<THREE.Material>();
   root.traverse((o) => {
     const mesh = o as THREE.Mesh;
@@ -149,7 +149,11 @@ export async function loadGltfCar(base: CarSpec): Promise<CarModel> {
   mergeInto(root, flat);
   body.add(flat);
 
-  // Lamp lenses: one atlas material per model, lit as a whole.
+  return { spec, group, wheels, setBraking() {}, setLights: lensLights(group) };
+}
+
+/** Lamp lenses: the materials named as lights, lit as a whole. Returns the switch. */
+export function lensLights(group: THREE.Object3D) {
   const lenses: THREE.MeshStandardMaterial[] = [];
   group.traverse((o) => {
     const mat = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
@@ -159,11 +163,5 @@ export async function loadGltfCar(base: CarSpec): Promise<CarModel> {
     }
   });
   const glow0 = lenses.map((m) => m.emissiveIntensity);
-  return {
-    spec, group, wheels,
-    setBraking() {},
-    setLights(on) {
-      lenses.forEach((m, i) => (m.emissiveIntensity = on ? Math.max(glow0[i], 1) * 3 : m.emissiveMap ? glow0[i] : 0));
-    },
-  };
+  return (on: boolean) => lenses.forEach((m, i) => (m.emissiveIntensity = on ? Math.max(glow0[i], 1) * 3 : m.emissiveMap ? glow0[i] : 0));
 }
