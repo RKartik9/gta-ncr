@@ -30,6 +30,8 @@ export interface Building {
   historic?: boolean;
   outer: number[];
   holes: number[][];
+  /** edges of `outer` (edge i runs from point i to point i + 1) that carry a colonnade: Connaught Place's blocks */
+  arcade?: number[];
 }
 
 export interface Area {

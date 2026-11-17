@@ -148,6 +148,9 @@ const NOT_THERE = new Set([1218426672]);
 
 function buildingFrom(id, tags, outer, holes) {
   if (Math.abs(ringArea(outer)) < 6 || NOT_THERE.has(id)) return;
+  // Metro stations are mapped as buildings, below ground (layer -2): Rajiv Chowk's is the whole of Connaught
+  // Place's Central Park. Nothing of them stands on the surface.
+  if (num(tags.layer) < 0 || tags.location === 'underground') return;
   // Tombs, gates, fort walls, the Jantar Mantar instruments: stone, not a block of flats with lit windows.
   const historic = !!tags.historic;
   const kind = tags.building === 'yes' ? (tags.amenity || tags.shop || tags.office ? 'commercial' : 'yes') : tags.building;
@@ -163,9 +166,11 @@ function buildingFrom(id, tags, outer, holes) {
     height = tags.man_made === 'water_well' ? 5 : Math.min(18, Math.max(4, Math.sqrt(Math.abs(ringArea(outer))) * 0.6));
   } else {
     stats.guessedHeight++;
-    const big = Math.abs(ringArea(outer)) > 900;
+    const size = Math.abs(ringArea(outer));
+    const big = size > 900;
     const base = kind === 'roof' ? 4 : kind === 'house' || kind === 'residential' ? 7 : big ? 16 : 10;
-    height = base + Math.floor(hash(id) * (kind === 'roof' ? 1 : 4)) * LEVEL_HEIGHT;
+    // a footprint the size of a room is a kiosk, a guard's hut or a public toilet: one floor, not a tower
+    height = size < 60 ? 3.6 : base + Math.floor(hash(id) * (kind === 'roof' ? 1 : 4)) * LEVEL_HEIGHT;
   }
   buildings.push({
     id, kind, name: tags.name, height: r2(height), minHeight: num(tags.min_height) ?? 0,
@@ -229,6 +234,76 @@ for (const el of osm.elements) {
   }
 }
 
+/** Metres the colonnade of a Connaught Place block stands out from its wall; the game builds it to match. */
+const ARCADE_DEPTH = 2.6;
+
+/**
+ * Connaught Place's blocks front the street with a colonnade. Which walls have room for one is worked out here,
+ * where every road is to hand: a wall gets it when the columns would stand clear of every carriageway and of the
+ * next building. The service lanes behind the blocks and the passages through them get none, as in the place itself.
+ * Each such building is given `arcade`: the numbers of the edges of its outline that carry one.
+ */
+function markArcades(plaza, mid) {
+  const near = (pts, reach) => {
+    for (let i = 0; i < pts.length; i += 2) if (Math.hypot(pts[i] - plaza[0], pts[i + 1] - plaza[1]) < reach) return true;
+    return false;
+  };
+  const inRing = (x, z, r) => {
+    let inside = false;
+    for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) {
+      if (r[i + 1] > z !== r[j + 1] > z && x < ((r[j] - r[i]) * (z - r[i + 1])) / (r[j + 1] - r[i + 1]) + r[i]) inside = !inside;
+    }
+    return inside;
+  };
+  const toSegment = (x, z, ax, az, bx, bz) => {
+    const dx = bx - ax, dz = bz - az, l = dx * dx + dz * dz;
+    const t = l ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l)) : 0;
+    return Math.hypot(x - ax - t * dx, z - az - t * dz);
+  };
+  const local = roads.filter((r) => near(r.pts, 520));
+  const around = buildings.filter((b) => near(b.outer, 520));
+  let walls = 0;
+  for (const b of around) {
+    const [cx, cz] = mid(b.outer);
+    // the same buildings the game dresses as white Georgian blocks
+    if (Math.hypot(cx - plaza[0], cz - plaza[1]) >= 380 || b.historic || ['roof', 'shed', 'garage'].includes(b.kind)) continue;
+    if (Math.abs(ringArea(b.outer)) < 150 || b.minHeight > 0) continue;
+    // Where OpenStreetMap gives a block no height, it is what every block here is: two tall storeys.
+    if (b.guessed) b.height = Math.min(b.height, 11.2);
+    if (b.height > 18) continue;
+    const o = b.outer, n = o.length / 2, out = ringArea(o) < 0 ? 1 : -1;
+    const arcade = [];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const ax = o[i * 2], az = o[i * 2 + 1], dx = o[j * 2] - ax, dz = o[j * 2 + 1] - az;
+      const len = Math.hypot(dx, dz);
+      if (len < 2) continue;
+      const nx = (-dz / len) * out, nz = (dx / len) * out;
+      let clear = true;
+      for (let k = 0; k <= 4 && clear; k++) {
+        // where the columns would stand, and a little beyond them
+        const wx = ax + (dx * k) / 4, wz = az + (dz * k) / 4;
+        const x = wx + nx * (ARCADE_DEPTH + 0.4), z = wz + nz * (ARCADE_DEPTH + 0.4);
+        for (const r of local) {
+          for (let q = 0; q + 3 < r.pts.length && clear; q += 2) {
+            if (toSegment(x, z, r.pts[q], r.pts[q + 1], r.pts[q + 2], r.pts[q + 3]) < r.width / 2 + 0.8) clear = false;
+            // a lane that runs between the wall and the columns
+            else if (toSegment(wx, wz, r.pts[q], r.pts[q + 1], r.pts[q + 2], r.pts[q + 3]) < ARCADE_DEPTH + 0.4) clear = false;
+          }
+          if (!clear) break;
+        }
+        if (clear) clear = !around.some((other) => inRing(x, z, other.outer) && !other.holes.some((h) => inRing(x, z, h)));
+      }
+      if (clear) arcade.push(i);
+    }
+    if (arcade.length) {
+      b.arcade = arcade;
+      walls += arcade.length;
+    }
+  }
+  console.log(`Connaught Place: colonnades on ${walls} walls of ${around.filter((b) => b.arcade).length} blocks`);
+}
+
 const [minX, maxZ] = project(south, west);
 const [maxX, minZ] = project(north, east);
 const [sx, sz] = project(...area.spawn);
@@ -279,6 +354,7 @@ if (!area.cell) {
 
   const park = areas.find((a) => a.name === 'Rajiv Chowk Central Park');
   const plaza = park ? mid(park.outer).map(r2) : [0, 0];
+  if (park) markArcades(plaza, mid);
   const dir = join(root, 'public/tiles', areaId);
   mkdirSync(dir, { recursive: true });
   let total = 0;

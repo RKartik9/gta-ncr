@@ -18,6 +18,38 @@ const PLASTER_TINTS: [number, number, number][] = [
   [1, 0.97, 0.9], [0.98, 0.9, 0.78], [0.95, 0.84, 0.78], [0.86, 0.92, 0.94], [0.93, 0.93, 0.85], [0.99, 0.93, 0.7], [0.88, 0.95, 0.86], [0.9, 0.88, 0.86],
 ];
 
+/** Towers round Connaught Place that people know by sight: red sandstone for the LIC building, glass for Statesman House. */
+const KNOWN: Record<string, Style> = { 'Jeevan Bharti': 'sandstone', 'Statesman House': 'glass' };
+
+/** Metres a Connaught Place colonnade stands out from its wall (tools/bake/bake.mjs leaves room for exactly this), and between its columns. */
+const ARCADE_DEPTH = 2.6, COLUMN_GAP = 3.6;
+
+/** A flat four-cornered face, wound so that it faces along (nx, ny, nz). */
+function quad(g: GeoBuilder, p: [number, number, number][], nx: number, ny: number, nz: number, c: [number, number, number]) {
+  const [a, b, d, e] = p.map(([x, y, z]) => g.vert(x, y, z, nx, ny, nz, 0, 0, c[0], c[1], c[2]));
+  const ux = p[1][0] - p[0][0], uy = p[1][1] - p[0][1], uz = p[1][2] - p[0][2];
+  const vx = p[2][0] - p[0][0], vy = p[2][1] - p[0][1], vz = p[2][2] - p[0][2];
+  if ((uy * vz - uz * vy) * nx + (uz * vx - ux * vz) * ny + (ux * vy - uy * vx) * nz >= 0) {
+    g.tri(a, b, d);
+    g.tri(a, d, e);
+  } else {
+    g.tri(a, d, b);
+    g.tri(a, e, d);
+  }
+}
+
+/** A round column, eight-sided, standing at (x, z). */
+function column(g: GeoBuilder, x: number, z: number, r: number, y0: number, y1: number, c: [number, number, number]) {
+  for (let k = 0; k < 8; k++) {
+    const a0 = (k / 8) * Math.PI * 2, a1 = ((k + 1) / 8) * Math.PI * 2;
+    const x0 = Math.sin(a0), z0 = Math.cos(a0), x1 = Math.sin(a1), z1 = Math.cos(a1);
+    const a = g.vert(x + x0 * r, y0, z + z0 * r, x0, 0, z0, 0, 0, ...c), b = g.vert(x + x1 * r, y0, z + z1 * r, x1, 0, z1, 0, 0, ...c);
+    const d = g.vert(x + x1 * r, y1, z + z1 * r, x1, 0, z1, 0, 0, ...c), e = g.vert(x + x0 * r, y1, z + z0 * r, x0, 0, z0, 0, 0, ...c);
+    g.tri(a, b, d);
+    g.tri(a, d, e);
+  }
+}
+
 function centroid(ring: number[]): [number, number] {
   let x = 0, z = 0;
   for (let i = 0; i < ring.length; i += 2) {
@@ -50,12 +82,14 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
   };
   const shops = new GeoBuilder(true);
   const arcade = new GeoBuilder(true);
+  const porch = new GeoBuilder(true);
   const roofs = new GeoBuilder(true);
   const colliders = new Map<Chunk, { v: number[]; i: number[] }>();
   const tanks: THREE.Matrix4[] = [];
 
   const styleOf = (b: Building, cx: number, cz: number): Style => {
     if (b.historic) return 'stone';
+    if (b.name && KNOWN[b.name]) return KNOWN[b.name];
     if (b.kind === 'roof' || b.kind === 'shed' || b.kind === 'garage') return 'shed';
     const h = hash01(b.id);
     // The white Georgian blocks ring the central park; everything inside the Outer Circle is one of them.
@@ -92,6 +126,8 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
         u1 = u0 + bays / f.bays;
       }
       v1 = f.floors === 1 ? 1 : Math.max(1, Math.round((y1 - y0) / (f.height / f.floors))) / f.floors;
+      // seen from outside, such a wall runs right to left: unturned, its shop signs read backwards
+      if (!outwardLeft) [u0, u1] = [u1, u0];
     }
     const [r, gr, bl] = tint;
     const a = g.vert(ax, y0, az, nx, 0, nz, u0, 0, r, gr, bl);
@@ -136,16 +172,67 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
       const outwardLeft = ringArea(ring) < 0 === isOuter;
       const n = ring.length / 2;
       const colBase = colV.length / 3;
+      // Connaught Place: the walls with a colonnade in front show their shops; the columns are built below
+      const fronted = isOuter && style === 'colonial' && ground && b.arcade ? new Set(b.arcade) : null;
       for (let i = 0; i < n; i++) {
         const j = (i + 1) % n;
         const ax = ring[i * 2], az = ring[i * 2 + 1], bx = ring[j * 2], bz = ring[j * 2 + 1];
         const seed = b.id * 31 + ri * 977 + i;
-        if (ground) wall(style === 'colonial' ? arcade : shops, ground, ax, az, bx, bz, y0, groundTop, outwardLeft, [1, 1, 1], seed);
+        if (fronted?.has(i)) wall(shops, shop, ax, az, bx, bz, y0, groundTop, outwardLeft, [1, 1, 1], seed);
+        else if (ground) wall(style === 'colonial' ? arcade : shops, ground, ax, az, bx, bz, y0, groundTop, outwardLeft, [1, 1, 1], seed);
         wall(walls[style], facade, ax, az, bx, bz, groundTop, top, outwardLeft, tint, seed);
         if (isOuter) {
           colV.push(ax, 0, az, ax, top, az);
           const a = colBase + i * 2, c = colBase + j * 2;
           colI.push(a, c, a + 1, c, c + 1, a + 1);
+        }
+      }
+      if (!fronted) return;
+
+      // The colonnade: a flat roof standing out from the wall at first-floor height, on a row of round columns.
+      const white: [number, number, number] = [0.95 * shade, 0.94 * shade, 0.9 * shade];
+      const side = outwardLeft ? 1 : -1;
+      /** which way edge i faces, or null if it has no length */
+      const facing = (i: number): [number, number] | null => {
+        const k = (i + 1) % n;
+        const dx = ring[k * 2] - ring[i * 2], dz = ring[k * 2 + 1] - ring[i * 2 + 1], len = Math.hypot(dx, dz);
+        return len < 0.05 ? null : [(-dz / len) * side, (dx / len) * side];
+      };
+      /** How far out the roof's corner is from the wall's corner where edges `e` and `other` meet: mitred if both carry the colonnade. */
+      const reach = (e: number, other: number): [number, number] => {
+        const a = facing(e)!, o = fronted.has(other) ? facing(other) : null;
+        const d = o ? 1 + a[0] * o[0] + a[1] * o[1] : 0;
+        return o && d > 0.5 ? [(a[0] + o[0]) / d, (a[1] + o[1]) / d] : a;
+      };
+      const under = groundTop - 0.45, over = groundTop + 0.55;
+      for (const i of fronted) {
+        const f = facing(i);
+        if (!f) continue;
+        const j = (i + 1) % n, before = (i + n - 1) % n;
+        const ax = ring[i * 2], az = ring[i * 2 + 1], bx = ring[j * 2], bz = ring[j * 2 + 1];
+        const [pax, paz] = reach(i, before), [pbx, pbz] = reach(i, j);
+        const D = ARCADE_DEPTH;
+        const oax = ax + pax * D, oaz = az + paz * D, obx = bx + pbx * D, obz = bz + pbz * D;
+        quad(porch, [[oax, under, oaz], [obx, under, obz], [obx, over, obz], [oax, over, oaz]], f[0], 0, f[1], white);
+        quad(porch, [[ax, under, az], [bx, under, bz], [obx, under, obz], [oax, under, oaz]], 0, -1, 0, [white[0] * 0.8, white[1] * 0.8, white[2] * 0.8]);
+        quad(porch, [[ax, over, az], [bx, over, bz], [obx, over, obz], [oax, over, oaz]], 0, 1, 0, white);
+        // the ends, where the colonnade stops, and the same line for the car to stop against
+        const len = Math.hypot(bx - ax, bz - az), tx = (bx - ax) / len, tz = (bz - az) / len;
+        const ends: [number, number, number, number, number, number][] = [];
+        if (!fronted.has(before)) ends.push([ax, az, oax, oaz, -tx, -tz]);
+        if (!fronted.has(j)) ends.push([bx, bz, obx, obz, tx, tz]);
+        for (const [wx, wz, ox, oz, ex, ez] of ends) quad(porch, [[wx, under, wz], [ox, under, oz], [ox, over, oz], [wx, over, wz]], ex, 0, ez, white);
+        for (const [x0, z0, x1, z1] of [[oax, oaz, obx, obz], ...ends]) {
+          const v = colV.length / 3;
+          colV.push(x0, 0, z0, x0, over, z0, x1, 0, z1, x1, over, z1);
+          colI.push(v, v + 2, v + 1, v + 2, v + 3, v + 1);
+        }
+        // columns a little inside the roof's edge, evenly spaced; the one at the far corner belongs to the next wall
+        const k = (D - 0.45) / D;
+        const cax = ax + pax * D * k, caz = az + paz * D * k, cbx = bx + pbx * D * k, cbz = bz + pbz * D * k;
+        const count = Math.max(1, Math.round(Math.hypot(cbx - cax, cbz - caz) / COLUMN_GAP));
+        for (let c = 0; c < count + (fronted.has(j) ? 0 : 1); c++) {
+          column(porch, cax + ((cbx - cax) * c) / count, caz + ((cbz - caz) * c) / count, 0.36, y0, under, white);
         }
       }
     });
@@ -194,6 +281,7 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
   }), 'walls-stone');
   await add(shops, facadeMaterial(shop, 1, 3), 'shopfronts');
   await add(arcade, facadeMaterial(colonnade, 1, 3.5), 'colonnade');
+  await add(porch, cached('m-porch', () => new THREE.MeshStandardMaterial({ roughness: 0.85, vertexColors: true })), 'porch');
   await add(roofs, cached('m-roof', () => new THREE.MeshStandardMaterial({ map: roofTexture(), roughness: 0.95, vertexColors: true })), 'roofs');
 
   const tankGeo = cached('g-tank', () => new THREE.CylinderGeometry(0.62, 0.66, 1.5, 12).translate(0, 0.95, 0));

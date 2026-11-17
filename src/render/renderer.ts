@@ -36,10 +36,12 @@ export function resolutionGovernor(renderer: THREE.WebGPURenderer, quality: Qual
     if (timer < 1.5) return;
     timer = 0;
     let next = ratio;
-    if (avg > 1 / 45) {
-      next = Math.max(floor, ratio * 0.85);
-      holdUp = 10; // after a drop, wait a while before trying higher again, or it see-saws
-    } else if (avg < 1 / 56 && holdUp <= 0) next = Math.min(top, ratio * 1.08);
+    // Against a 60 Hz screen a frame that is late at all is shown a whole refresh late: an average of 50 fps is
+    // 60 with every fifth frame doubled, which is what reads as lag. So it gives way as soon as frames are missed.
+    if (avg > 1 / 55) {
+      next = Math.max(floor, ratio * (avg > 1 / 45 ? 0.8 : 0.9));
+      holdUp = 20; // after a drop, wait a while before trying higher again, or it see-saws
+    } else if (avg < 1 / 58 && holdUp <= 0) next = Math.min(top, ratio * 1.05);
     if (Math.abs(next - ratio) > 0.01) {
       ratio = next;
       renderer.setPixelRatio(ratio);
