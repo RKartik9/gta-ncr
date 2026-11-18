@@ -36,6 +36,11 @@ const SUBSTEPS = 4;
 const WHEEL_INERTIA = 1.4, DRIVE_INERTIA = 2.4;
 /** N m of torque a limited-slip differential passes across for each rad/s its two sides differ by. */
 const LIMITED_SLIP = 90;
+/** g of extra stopping on the brake pedal, on top of what the tyres manage: real cars stop at about 1 g, which feels slow on a screen.
+ * It pulls on the body, not the tyres, so it cannot lock a wheel or roll a tall car over. */
+const BRAKE_ASSIST = 0.6;
+/** m/s at which the steering lock has come halfway down to its high-speed limit. Raise to keep more lock at speed. */
+const LOCK_FADE = 20;
 
 /** Grip against slip, both as a share of their peak: rises to 1 at 1, then eases down to SLIDE. */
 const tyreCurve = (s: number) => (s < 1 ? s * (2 - s) : SLIDE + (1 - SLIDE) / (1 + ((s - 1) / 2) ** 2));
@@ -205,7 +210,7 @@ export class Vehicle {
     else if (Math.abs(this.drift) < 0.05) this.loose = false;
     // At speed the lock comes down to just past the angle where the tyres grip hardest: any more only scrubs them.
     const least = Math.atan(PEAK_ANGLE) * 1.2;
-    const lock = least + (c.maxSteer - least) / (1 + (Math.abs(v) / 13) ** 1.6);
+    const lock = least + (c.maxSteer - least) / (1 + (Math.abs(v) / LOCK_FADE) ** 1.6);
     const target = clamp(input.steer * lock + this.drift * 0.8 * sliding, -c.maxSteer, c.maxSteer);
     // and it goes on more gently, but comes back to catch a slide as fast as ever
     const rate = (input.steer === 0 || sliding > 0 ? 3.2 : 2.2 / (1 + Math.abs(v) / 30)) * dt;
@@ -358,10 +363,15 @@ export class Vehicle {
     for (const [impulse, at] of pushes) body.applyImpulseAtPoint(impulse, at, true);
 
     // The air: drag against the way the car is going, and for a car with wings, a push down onto its tyres.
+    // The brake assist rides along: against the way the car is going, as much as the wheels are on the road, and
+    // never more than would stop it in this step.
     const air = Math.hypot(vel.x, vel.y, vel.z);
     const down = weight > 0 ? c.downforce * v * v : 0;
+    const assist = air > 0.1 ? Math.min(this.brake * BRAKE_ASSIST * G * clamp(weight / (c.mass * G), 0, 1) * dt, air) / air : 0;
     body.applyImpulse({
-      x: (-vel.x * c.drag * air - up.x * down) * dt, y: (-vel.y * c.drag * air - up.y * down) * dt, z: (-vel.z * c.drag * air - up.z * down) * dt,
+      x: (-vel.x * (c.drag * air + c.mass * assist / dt) - up.x * down) * dt,
+      y: (-vel.y * (c.drag * air + c.mass * assist / dt) - up.y * down) * dt,
+      z: (-vel.z * (c.drag * air + c.mass * assist / dt) - up.z * down) * dt,
     }, true);
   }
 
