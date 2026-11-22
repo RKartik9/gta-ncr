@@ -12,6 +12,8 @@ import { ROAD_HEIGHT, buildBasePlane, isMajor, isStreet } from './world/ground.t
 import { LampLights } from './world/props.ts';
 import { STEP, createPhysics, stepWorld } from './world/physics.ts';
 import { Streamer } from './world/streamer.ts';
+import { Traffic } from './world/traffic.ts';
+import { Pedestrians } from './world/pedestrians.ts';
 import { buildLandmarks, neighbourhood } from './world/landmarks.ts';
 import { CARS, type CarSpec, axleHeight, restLength } from './vehicle/cars.ts';
 import { loadGarage, loadImported, setupImporter } from './vehicle/garage.ts';
@@ -45,6 +47,9 @@ async function boot() {
   const saved = !asked || (await chooseStart(!!stored)) ? stored : null;
   const canvas = document.getElementById('view') as HTMLCanvasElement;
 
+  // every road in the city: the GPS, the big map and the traffic need it, and so does each map cell, to keep
+  // its trees and poles off roads that belong to the cell next door. Fetched while the renderer starts.
+  const overviewLoad = loadJson<Tile>('central/overview');
   setLoading('Starting the renderer…', false, 0.05);
   const renderer = await createRenderer(canvas, quality, query.has('gl'));
   setAnisotropy(Math.min(quality.anisotropy, renderer.getMaxAnisotropy()));
@@ -52,6 +57,7 @@ async function boot() {
   setLoading('Loading the map of central Delhi…', false, 0.12);
   const area = 'central';
   const grid = await loadJson<Grid>(`${area}/index`);
+  const all = await overviewLoad;
   const plaza = grid.plaza;
 
   const scene = new THREE.Scene();
@@ -69,7 +75,10 @@ async function boot() {
   const models = new Map<string, Promise<CarModel>>();
   const hud = new Hud(grid.attribution, (mode) => setCamera(mode), () => void switchCar());
   const lampLights = new LampLights(scene, [], quality.lampLights);
-  const streamer = new Streamer(grid, area, scene, world, quality.treeDensity, quality.drawDistance, quality.detailDistance);
+  // in the scene from the start, so its shaders are built behind the loading screen
+  const traffic = new Traffic(scene, world, quality.traffic, quality.drawDistance);
+  const pedestrians = new Pedestrians(scene, world, quality.pedestrians);
+  const streamer = new Streamer(grid, area, all.roads, scene, world, quality.treeDensity, quality.drawDistance, quality.detailDistance);
   let booting = true, built = 0;
   streamer.onChange = (added, removed) => {
     if (added && booting) setLoading(`Building the city… ${++built} blocks of Delhi`, false, 0.18 + Math.min(0.7, built * 0.07));
@@ -190,7 +199,7 @@ async function boot() {
   });
   CAMERA_MODES.forEach((mode, i) => keys.on(`Digit${i + 1}`, () => setCamera(mode)));
   keys.on('KeyV', () => void switchCar());
-  // GPS: the big map (M) sets a waypoint; the route is worked out over every road once all cells are in.
+  // GPS: the big map (M) sets a waypoint; the route is worked out over every road once the overview is in.
   const gps = new Gps(scene);
   if (saved?.waypoint) gps.waypoint = saved.waypoint; // routed as soon as the road graph is in
   const bigmap = new BigMap(grid);
@@ -199,10 +208,11 @@ async function boot() {
     gps.set(p, carPos());
     hud.say(p ? (gps.ready ? 'Waypoint set' : 'Waypoint set: working out the route…') : 'Waypoint cleared');
   };
-  void Promise.all(grid.cells.map((k) => loadJson<Tile>(`${area}/${k}`))).then((all) => {
-    gps.setGraph(new RoadGraph(all.flatMap((t) => t.roads)), carPos());
-    bigmap.setTiles(all);
-  });
+  gps.setGraph(new RoadGraph(all.roads), carPos());
+  traffic.setRoads(all.roads.filter(isStreet), all.signals, carPos().x, carPos().z);
+  pedestrians.setRoads(all.roads.filter(isStreet));
+  traffic.walkers = pedestrians.positions;
+  bigmap.setTiles([all]);
   const toggleMap = (open = !bigmap.open) => {
     if (open) hud.toggleMenu(false);
     bigmap.toggle(open, carPos());
@@ -435,6 +445,7 @@ async function boot() {
       previous.p.copy(current.p);
       previous.q.copy(current.q);
       vehicle.update(input, STEP);
+      traffic.step(STEP, current.p.x, current.p.z);
       stepWorld(world);
       readPose(current);
       lag -= STEP;
@@ -453,6 +464,15 @@ async function boot() {
     if (steps && (vehicle.skid > 0.2 || vehicle.abs)) keys.rumble(Math.max(vehicle.skid * 0.35, vehicle.abs ? 0.3 : 0), 60);
     sound.update(dt, vehicle.speed, vehicle.wheelSpeed, input.throttle, vehicle.skid);
     streamer.sync();
+    {
+      // the people on the pavement: a car that runs one down feels it
+      const lv = vehicle.body.linvel(), p = current.p;
+      const struck = pedestrians.update(paused ? 0 : dt, p.x, p.z, lv.x, lv.z);
+      if (struck) {
+        sound.crash(struck * 0.4);
+        keys.rumble(0.4, 150);
+      }
+    }
     const blend = lag / STEP;
     model.group.position.lerpVectors(previous.p, current.p, blend);
     model.group.position.y += ROAD_HEIGHT;
@@ -491,6 +511,7 @@ async function boot() {
       headlights = null;
     }
     carLamps.set(headlights ?? dark, vehicle.braking);
+    traffic.setLights(dark);
     lampLights.update(dt, model.group.position);
 
     director.update(dt, model.group, vehicle, spec);
@@ -542,6 +563,8 @@ async function boot() {
       perf,
       grid,
       streamer,
+      traffic,
+      pedestrians,
       debug: { THREE, scene, sun, renderer, camera },
       get vehicle() {
         return vehicle;

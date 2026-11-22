@@ -8,6 +8,8 @@ export interface DriveInput {
   /** -1 (right) to 1 (left) */
   steer: number;
   handbrake: boolean;
+  /** accelerate and brake held together: the rear tyres let go and the car slides on the throttle */
+  drift?: boolean;
 }
 
 /** Chassis-space wheel order: front-left, front-right, rear-left, rear-right. Forward is +z, so left is +x. */
@@ -41,6 +43,14 @@ const LIMITED_SLIP = 90;
 const BRAKE_ASSIST = 0.6;
 /** m/s at which the steering lock has come halfway down to its high-speed limit. Raise to keep more lock at speed. */
 const LOCK_FADE = 20;
+/** Share of their sideways grip the rear tyres keep in a power slide (accelerate and brake held together). Lower slides more. */
+const DRIFT_GRIP = 0.55;
+/** Slide angle (radians) past which the rear tyres get their grip back, so a drift holds an angle rather than spinning. */
+const DRIFT_ANGLE = 0.5;
+/** Touch of brake held through a power slide: it throws weight onto the nose and lightens the tail. */
+const DRIFT_BRAKE = 0.05;
+/** How hard the car is turned back in line with where it is going after a slide (rad/s of turn per radian of slide). */
+const DRIFT_RECOVERY = 3;
 
 /** Grip against slip, both as a share of their peak: rises to 1 at 1, then eases down to SLIDE. */
 const tyreCurve = (s: number) => (s < 1 ? s * (2 - s) : SLIDE + (1 - SLIDE) / (1 + ((s - 1) / 2) ** 2));
@@ -80,6 +90,10 @@ export class Vehicle {
   private slip = [0, 0, 0, 0];
   /** the handbrake has thrown the car into a slide: stability control stands back until it is straight again */
   private loose = false;
+  /** 0 to 1: how far into a power slide the car is; eased so the tail goes and comes back smoothly */
+  private driftHold = 0;
+  /** seconds left in which a just-finished power slide is straightened out */
+  private recover = 0;
   private cut = 0;
   private gas = 0;
   private brake = 0;
@@ -187,7 +201,10 @@ export class Vehicle {
 
     // Pedals. The same control brakes when the car is rolling the other way, and drives once it has stopped.
     let gas = 0, brake = 0;
-    if (input.throttle > 0) {
+    if (input.drift && v > -0.8) {
+      // power slide: throttle on, a dab of brake, and the stability control stood back (below)
+      [gas, brake, this.reverse] = [Math.max(input.throttle, 0.6), DRIFT_BRAKE, false];
+    } else if (input.throttle > 0) {
       if (v < -0.8) brake = input.throttle;
       else [gas, this.reverse] = [input.throttle, false];
     } else if (input.throttle < 0) {
@@ -206,6 +223,8 @@ export class Vehicle {
     // lock and the chase camera swung from side to side.
     this.drift = Math.hypot(v, sideways) > 4 && !(this.reverse && v < 0) ? Math.atan2(sideways, v) : 0;
     const sliding = clamp((Math.abs(this.drift) - 0.05) / 0.12, 0, 1);
+    // let go of the pedals and the rear tyres bite again at once, and the stability control is back to catch it
+    this.driftHold = approach(this.driftHold, input.drift && Math.abs(v) > 3 ? 1 : 0, (input.drift ? 4 : 8) * dt);
     if (input.handbrake) this.loose = true;
     else if (Math.abs(this.drift) < 0.05) this.loose = false;
     // At speed the lock comes down to just past the angle where the tyres grip hardest: any more only scrubs them.
@@ -251,8 +270,10 @@ export class Vehicle {
     // bite again. Without it a floored throttle in a corner spun the car, and the turn was lost catching it.
     // A pull on the handbrake asks for the slide, and switches it off until the car is straight.
     const over = Math.max(Math.abs(this.slip[2]), Math.abs(this.slip[3])) - 1, wide = Math.max(Math.abs(this.slip[0]), Math.abs(this.slip[1])) - 1.6;
-    this.cut = approach(this.cut, this.loose ? 0 : clamp(Math.max(over, wide) / 0.6, 0, 1), 8 * dt);
-    const push = tread < top ? (1 - this.cut) * this.gas * ((this.reverse ? c.reverseForce : c.engineForce) * (1 - (tread / top) ** 2) + c.drag * tread * tread) : 0;
+    this.cut = approach(this.cut, this.loose || input.drift ? 0 : clamp(Math.max(over, wide) / 0.6, 0, 1), 8 * dt);
+    // past the drift angle the throttle is feathered, as a driver would, or a rear-drive car powers round into a spin
+    const feather = 1 - this.driftHold * clamp((Math.abs(this.drift) - DRIFT_ANGLE) / 0.3, 0, 0.85);
+    const push = tread < top ? feather * (1 - this.cut) * this.gas * ((this.reverse ? c.reverseForce : c.engineForce) * (1 - (tread / top) ** 2) + c.drag * tread * tread) : 0;
 
     // Differentials. Left to itself a driven wheel with no weight on it (the inside one in a hard corner) just
     // spins up and wastes the engine; a limited-slip differential drags it back towards its partner's speed,
@@ -309,6 +330,10 @@ export class Vehicle {
       // A tyre carrying more than its share grips a little less for each newton, so weight thrown onto one
       // corner loses more grip there than it gains: why a car pushed hard runs wide or steps out.
       const mu = (front ? c.gripFront : c.gripRear) * clamp(1 - 0.12 * (N / ((c.mass * G) / 4) - 1), 0.75, 1.1);
+      // in a power slide the rear tyres grip less sideways, but still drive and brake along
+      // and get it back as the slide passes DRIFT_ANGLE, so the drift holds instead of spinning the car round
+      const holding = this.driftHold * clamp(1 - (Math.abs(this.drift) - DRIFT_ANGLE) / 0.25, 0, 1);
+      const muSide = front ? mu : mu * (1 - (1 - DRIFT_GRIP) * holding);
       const ref = Math.max(Math.abs(vLong), CRAWL);
       const sy = vLat / ref / PEAK_ANGLE;
       this.slip[n] = Math.abs(vLong) > 3 ? sy : 0;
@@ -338,7 +363,7 @@ export class Vehicle {
         if (s2 > 1e-4) {
           const f = (mu * N * tyreCurve(s2)) / s2;
           fx += f * sx2;
-          fy -= f * sy;
+          fy -= (f * sy * muSide) / mu;
         }
         slide = s2;
       }
@@ -373,6 +398,15 @@ export class Vehicle {
       y: (-vel.y * (c.drag * air + c.mass * assist / dt) - up.y * down) * dt,
       z: (-vel.z * (c.drag * air + c.mass * assist / dt) - up.z * down) * dt,
     }, true);
+
+    // Just off a power slide, the car's turning is eased towards the way it is going, so it straightens out of the
+    // drift as in an arcade game instead of carrying its swing round into a spin. Wheels on the road only.
+    this.recover = input.drift ? 1.5 : Math.max(0, this.recover - dt);
+    if (!input.drift && this.recover > 0 && !input.handbrake && weight > 0 && Math.abs(this.drift) > 0.1 && Math.abs(v) > 3) {
+      const av = body.angvel();
+      const want = clamp(this.drift * DRIFT_RECOVERY, -2.5, 2.5);
+      body.setAngvel({ x: av.x, y: av.y + (want - av.y) * Math.min(1, 4 * dt), z: av.z }, true);
+    }
   }
 
   /** On its roof or its side: the reset key is the way out. */

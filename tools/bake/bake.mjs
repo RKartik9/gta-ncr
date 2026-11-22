@@ -1,7 +1,7 @@
 // Bakes an OpenStreetMap extract (Overpass JSON) into a compact tile the game loads.
 // Usage: node tools/bake/bake.mjs [--fetch] [--area central|cp]
 // `central` is fetched in ~2 km chunks and written as 1 km cells under public/tiles/central/, plus an index.json.
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,8 +12,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CP_ORIGIN = [(28.6245 + 28.6385) / 2, (77.2087 + 77.2247) / 2];
 const AREAS = {
   cp: { name: 'Connaught Place', bbox: [28.6245, 77.2087, 28.6385, 77.2247], spawn: [28.6328, 77.2197] },
-  // CP, Janpath, Kartavya Path and India Gate, Mandi House, Lutyens' Delhi, Khan Market
-  central: { name: 'Central Delhi', bbox: [28.585, 77.18, 28.645, 77.245], spawn: [28.6328, 77.2197], cell: 1000, chunk: [0.015, 0.0163] },
+  // CP, Lutyens' Delhi and India Gate; Old Delhi and the Red Fort to the north, Karol Bagh to the west, the Yamuna and
+  // Akshardham to the east, Nizamuddin, Lajpat Nagar and Hauz Khas to the south. Its corners sit on the old chunk grid.
+  central: { name: 'Delhi', bbox: [28.54, 77.1311, 28.675, 77.2939], spawn: [28.6328, 77.2197], cell: 1000, chunk: [0.015, 0.0163] },
 };
 
 const OVERPASS = [
@@ -36,9 +37,9 @@ const area = AREAS[areaId];
 if (!area) throw new Error(`unknown area ${areaId}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchRaw([s, w, n, e], rawPath) {
+async function fetchRaw([s, w, n, e], rawPath, depth = 0) {
   const q = `[out:json][timeout:180][bbox:${s},${w},${n},${e}];(way["highway"];way["building"];relation["building"];way["leisure"~"park|garden"];way["landuse"];way["natural"~"water|wood|tree_row"];node["natural"="tree"];node["highway"~"traffic_signals|crossing|street_lamp|bus_stop"];node["barrier"="bollard"];way["barrier"];way["railway"];);out body;>;out skel qt;`;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < (depth ? 3 : 2); attempt++) {
     for (const url of OVERPASS) {
       try {
         const res = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: q }), headers: { 'User-Agent': 'delhi-drive-bake/0.2' }, signal: AbortSignal.timeout(200_000) });
@@ -55,25 +56,42 @@ async function fetchRaw([s, w, n, e], rawPath) {
     }
     await sleep(15000 * (attempt + 1)); // Overpass asks busy clients to back off
   }
-  throw new Error('every Overpass endpoint failed');
+  // ponytail: a dense chunk can time out everywhere; split it into quarters (recursively, up to depth 2) and merge
+  if (depth >= 2) throw new Error('every Overpass endpoint failed');
+  console.warn(`splitting ${s},${w},${n},${e} into quarters`);
+  const [ms, mw] = [(s + n) / 2, (w + e) / 2].map((v) => +v.toFixed(5));
+  const elements = [];
+  for (const [i, q] of [[s, w, ms, mw], [s, mw, ms, e], [ms, w, n, mw], [ms, mw, n, e]].entries()) {
+    const part = `${rawPath}.part${i}`;
+    if (!existsSync(part)) await fetchRaw(q, part, depth + 1);
+    elements.push(...JSON.parse(readFileSync(part, 'utf8')).elements);
+  }
+  writeFileSync(rawPath, JSON.stringify({ elements })); // duplicates are dropped by the merge below
+  for (let i = 0; i < 4; i++) unlinkSync(`${rawPath}.part${i}`);
 }
 
 // One area is fetched as one or more chunks; elements shared by neighbouring chunks are kept once.
 const chunks = [];
 if (area.chunk) {
   const [s0, w0, n0, e0] = area.bbox;
-  for (let s = s0, i = 0; s < n0 - 1e-9; s += area.chunk[0], i++) {
-    for (let w = w0, j = 0; w < e0 - 1e-9; w += area.chunk[1], j++) {
-      chunks.push({ bbox: [s, w, Math.min(n0, s + area.chunk[0]), Math.min(e0, w + area.chunk[1])].map((v) => +v.toFixed(5)), path: join(root, 'tools/bake/raw', areaId, `${i}_${j}.json`) });
+  for (let s = s0; s < n0 - 1e-9; s += area.chunk[0]) {
+    for (let w = w0; w < e0 - 1e-9; w += area.chunk[1]) {
+      chunks.push({ bbox: [s, w, Math.min(n0, s + area.chunk[0]), Math.min(e0, w + area.chunk[1])].map((v) => +v.toFixed(5)), path: join(root, 'tools/bake/raw', areaId, `${s.toFixed(4)}_${w.toFixed(4)}.json`) });
     }
   }
 } else chunks.push({ bbox: area.bbox, path: join(root, 'tools/bake/raw', `${areaId}.json`) });
+
+// a second run with --reverse fetches from the other end, so two can share a slow download
+if (args.includes('--reverse')) chunks.reverse();
 
 const seen = new Map();
 for (const [k, c] of chunks.entries()) {
   if (args.includes('--fetch') || !existsSync(c.path)) {
     console.log(`fetching chunk ${k + 1}/${chunks.length} ${c.bbox.join(',')}`);
-    await fetchRaw(c.bbox, c.path);
+    // ponytail: never give up while Overpass is down; wait and go again (saved quarters are reused)
+    for (;;) {
+      try { await fetchRaw(c.bbox, c.path); break; } catch (err) { console.warn(`${err.message}; retrying in 2 min`); await sleep(120_000); }
+    }
     await sleep(2000);
   }
   for (const el of JSON.parse(readFileSync(c.path, 'utf8')).elements) {
@@ -365,6 +383,10 @@ if (!area.cell) {
   }
   const index = { ...head, bounds, cell: size, cols, rows, spawn: [r2(sx), r2(sz)], plaza, cells: [...cells.keys()].sort(), stats };
   writeFileSync(join(dir, 'index.json'), JSON.stringify(index));
+  // Every road, park and traffic signal in one file, for the GPS, the big map and the traffic: they need the whole city, not just the cells round the car.
+  const overview = { ...head, bounds, spawn: index.spawn, roads, areas, paths: [], buildings: [], trees: [], signals, stats: {} };
+  writeFileSync(join(dir, 'overview.json'), JSON.stringify(overview));
+  console.log(`overview: ${kb(overview)} kB`);
   console.log(`${area.name}: ${((maxX - minX) * (maxZ - minZ) / 1e6).toFixed(1)} km² in ${cells.size} cells of ${size} m (${cols}×${rows}), ${total} kB -> ${dir}`);
 }
 console.log(stats);

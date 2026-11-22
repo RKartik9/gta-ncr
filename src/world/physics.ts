@@ -11,6 +11,11 @@ export const STEP = 1 / 60;
  */
 export const GROUND_GROUPS = (0x0002 << 16) | 0xffff;
 export const TYRE_GROUPS = (0x0004 << 16) | (0xffff & ~0x0002);
+/** Building walls. Driving traffic passes through them: a few mapped roads run under arcades and gateways or graze a
+ * building's corner, and a car on its line must not be wrecked there. A wrecked car is solid to them again. */
+export const WALL_GROUPS = (0x0008 << 16) | 0xffff;
+export const TRAFFIC_GROUPS = (0x0010 << 16) | (0xffff & ~0x0008);
+export const WRECK_GROUPS = (0x0010 << 16) | 0xffff;
 
 /** The ground and the fence round the edge of the map; everything else arrives cell by cell with `addProps`. */
 export async function createPhysics(bounds: Tile['bounds']) {
@@ -98,7 +103,7 @@ interface LooseLike {
  */
 export function addProps(world: RAPIER.World, solids: SolidLike[], loose: LooseLike[], walls?: { vertices: Float32Array; indices: Uint32Array }) {
   const colliders: RAPIER.Collider[] = [];
-  if (walls?.indices.length) colliders.push(world.createCollider(RAPIER.ColliderDesc.trimesh(walls.vertices, walls.indices).setFriction(0.3)));
+  if (walls?.indices.length) colliders.push(world.createCollider(RAPIER.ColliderDesc.trimesh(walls.vertices, walls.indices).setFriction(0.3).setCollisionGroups(WALL_GROUPS)));
   for (const s of solids) {
     colliders.push(world.createCollider(RAPIER.ColliderDesc.cylinder(s.h / 2, s.r).setTranslation(s.x, s.h / 2, s.z).setFriction(0.5)));
   }

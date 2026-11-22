@@ -28,6 +28,8 @@ export function instanced<T extends THREE.NodeMaterial>(material: T, tinted = fa
 export class Instances extends THREE.Mesh<THREE.InstancedBufferGeometry> {
   /** set `needsUpdate` after `setMatrixAt`, as with InstancedMesh */
   readonly instanceMatrix: { needsUpdate: boolean };
+  /** set once `dispose` has run */
+  disposed = false;
   private data: Float32Array;
   private shape: THREE.BufferGeometry;
 
@@ -79,6 +81,7 @@ export class Instances extends THREE.Mesh<THREE.InstancedBufferGeometry> {
   /** Frees this mesh's own data and leaves the shape, which every other copy of it still uses. */
   dispose() {
     const g = this.geometry;
+    this.disposed = true;
     g.setIndex(null);
     for (const name in this.shape.attributes) g.deleteAttribute(name);
     g.dispose();

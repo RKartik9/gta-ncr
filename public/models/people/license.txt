@@ -1,0 +1,14 @@
+People walking the pavements. All from Sketchfab, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/):
+
+man_arab.glb      "Arab Man -RIGGED-" by NABEEL619
+                  https://sketchfab.com/3d-models/arab-man-rigged-0f87f4c0885346ad8f99ba5ccafd153e
+man_guy.glb       "Guy ReadyPlayerMe Avatar" by 4licia
+                  https://sketchfab.com/3d-models/guy-readyplayerme-avatar-00c481fb77344ab79bd63383f8726d98
+woman_casual.glb  "avatar-full-body-female-ready-player-me" by yhomi
+                  https://sketchfab.com/3d-models/avatar-full-body-female-ready-player-me-50ad36d3409c4cea804a3f583e3b3acf
+woman_girl.glb    "Girl Avatar - Ready Player Me" by Hellencam
+                  https://sketchfab.com/3d-models/girl-avatar-ready-player-me-087b7514d9d54bc689b2ca220f7e74f7
+woman_office.glb  "Office lady Character" by adabhade17
+                  https://sketchfab.com/3d-models/office-lady-character-3500e52341194c94b51b73edd260c662
+
+The man who drives (../rider/model.glb) walks the pavements too; see ../rider/license.txt.

@@ -8,9 +8,9 @@ import { mergeInto } from './gltfCar.ts';
 // seat or over a bike's bars when a vehicle is loaded and then frozen into plain meshes, so it costs what a
 // wing mirror costs. He does not move: no hands turning the wheel, no head turning.
 
-type V3 = [number, number, number];
+export type V3 = [number, number, number];
 /** Where each bone points, in the figure's own space: x to his left, y up, z the way he faces. Right limbs mirror the left. */
-type Pose = Record<string, V3>;
+export type Pose = Record<string, V3>;
 
 const DRIVING: Pose = {
   Hips: [0, 0.95, -0.3], Spine: [0, 0.96, -0.27], Spine1: [0, 0.97, -0.24], Spine2: [0, 1, -0.12], Neck: [0, 1, 0.06], Head: [0, 1, 0],
@@ -24,9 +24,12 @@ const RIDING: Pose = {
   UpLeg: [0.24, -0.28, 1], Leg: [0, -0.85, -0.5], Foot: [0.05, -0.2, 1],
 };
 
-let figure: Promise<{ root: THREE.Object3D; bones: Map<string, THREE.Object3D>; rest: Map<THREE.Object3D, THREE.Quaternion> }> | undefined;
-const load = () =>
-  (figure ??= new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}models/rider/model.glb`).then((gltf) => {
+type Figure = { root: THREE.Object3D; bones: Map<string, THREE.Object3D>; rest: Map<THREE.Object3D, THREE.Quaternion> };
+const figures = new Map<string, Promise<Figure>>();
+/** A rigged figure under public/models (any with the usual Mixamo / Ready Player Me skeleton); the driver by default. */
+const load = (file = 'rider/model.glb') => {
+  let figure = figures.get(file);
+  if (!figure) figures.set(file, (figure = new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}models/${file}`).then((gltf) => {
     const bones = new Map<string, THREE.Object3D>(), rest = new Map<THREE.Object3D, THREE.Quaternion>();
     gltf.scene.traverse((o) => {
       if (!(o as THREE.Bone).isBone) return;
@@ -34,9 +37,11 @@ const load = () =>
       bones.set(o.name.replace(/^mixamorig:?/i, '').replace(/_\d+$/, ''), o);
       rest.set(o, o.quaternion.clone());
     });
-    if (!bones.has('Hips') || !bones.has('LeftUpLeg')) throw new Error('the rider figure has no skeleton this knows');
+    if (!bones.has('Hips') || !bones.has('LeftUpLeg')) throw new Error(`${file} has no skeleton this knows`);
     return { root: gltf.scene, bones, rest };
-  }));
+  })));
+  return figure;
+};
 
 const a = new THREE.Vector3(), b = new THREE.Vector3(), turn = new THREE.Quaternion(), world = new THREE.Quaternion(), parent = new THREE.Quaternion();
 
@@ -78,6 +83,56 @@ function findGrips(frame: THREE.Object3D, hips: THREE.Vector3, shoulderUp: numbe
  * Puts the driver in a car, his eyes where the cockpit camera is, or the rider on a bike's saddle.
  * A vehicle that cannot have him (the figure failed to load) simply goes without.
  */
+/** Bends the figure into `pose`, parents first. A name with no Left or Right is the left side's, mirrored onto the right. */
+function applyPose(bones: Map<string, THREE.Object3D>, pose: Pose) {
+  for (const [name, [x, y, z]] of Object.entries(pose)) {
+    const bone = bones.get(name);
+    if (bone) aim(bone, [x, y, z]);
+    else {
+      aim(bones.get(`Left${name}`)!, [x, y, z]);
+      aim(bones.get(`Right${name}`)!, [-x, y, z]);
+    }
+  }
+}
+
+/** Frozen: every vertex goes where its bones have carried it, and the skeleton is left behind. */
+function freeze(root: THREE.Object3D) {
+  root.updateWorldMatrix(true, true);
+  const still = new THREE.Group();
+  const p = new THREE.Vector3(), n = new THREE.Vector3();
+  root.traverse((o) => {
+    const skinned = o as THREE.SkinnedMesh;
+    if (!skinned.isSkinnedMesh || Array.isArray(skinned.material) || /teeth/i.test(skinned.material.name)) return;
+    const from = skinned.geometry, pos = from.attributes.position, nor = from.attributes.normal;
+    const g = new THREE.BufferGeometry();
+    const at = new Float32Array(pos.count * 3), up = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      p.fromBufferAttribute(pos, i);
+      n.fromBufferAttribute(nor, i).multiplyScalar(0.01).add(p);
+      skinned.applyBoneTransform(i, p).applyMatrix4(skinned.matrixWorld);
+      skinned.applyBoneTransform(i, n).applyMatrix4(skinned.matrixWorld).sub(p).normalize();
+      p.toArray(at, i * 3);
+      n.toArray(up, i * 3);
+    }
+    g.setAttribute('position', new THREE.BufferAttribute(at, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(up, 3));
+    if (from.attributes.uv) g.setAttribute('uv', from.attributes.uv);
+    g.setIndex(from.index);
+    still.add(new THREE.Mesh(g, skinned.material));
+  });
+  return still;
+}
+
+/** A figure stood in each of `poses` and frozen, for the people in the street: plain meshes in its own space (x to its left, z ahead). */
+export async function posedFigures(poses: Pose[], file?: string) {
+  const { root, bones, rest } = await load(file);
+  return poses.map((pose) => {
+    for (const [bone, q] of rest) bone.quaternion.copy(q);
+    applyPose(bones, pose);
+    return freeze(root);
+  });
+}
+
 export async function seatRider(model: CarModel): Promise<CarModel> {
   try {
     const { root, bones, rest } = await load();
@@ -91,14 +146,7 @@ export async function seatRider(model: CarModel): Promise<CarModel> {
       const drop = THREE.MathUtils.clamp(eyeY - 0.62 - spec.groundClearance - 0.14, 0.04, shin * 0.9) / shin;
       pose.Leg = [0, -drop, Math.sqrt(1 - drop * drop)];
     }
-    for (const [name, [x, y, z]] of Object.entries(pose)) {
-      const centre = bones.get(name);
-      if (centre) aim(centre, [x, y, z]);
-      else {
-        aim(bones.get(`Left${name}`)!, [x, y, z]);
-        aim(bones.get(`Right${name}`)!, [-x, y, z]);
-      }
-    }
+    applyPose(bones, pose);
     const hipsAt = bones.get('Hips')!.getWorldPosition(new THREE.Vector3());
     if (bike) {
       const [up, along] = spec.imported?.seat ?? [spec.height * 0.72, -spec.length * 0.13];
@@ -125,29 +173,8 @@ export async function seatRider(model: CarModel): Promise<CarModel> {
     for (const [name, bone] of bones) if (/Hand(Index|Middle|Ring|Pinky)[123]$/.test(name)) bone.rotateX(0.85);
     root.updateWorldMatrix(true, true);
 
-    // Frozen: every vertex goes where its bones have carried it, and the skeleton is left behind.
-    const still = new THREE.Group();
-    const p = new THREE.Vector3(), n = new THREE.Vector3();
-    root.traverse((o) => {
-      const skinned = o as THREE.SkinnedMesh;
-      if (!skinned.isSkinnedMesh || Array.isArray(skinned.material) || /teeth/i.test(skinned.material.name)) return;
-      const from = skinned.geometry, pos = from.attributes.position, nor = from.attributes.normal;
-      const g = new THREE.BufferGeometry();
-      const at = new Float32Array(pos.count * 3), up = new Float32Array(pos.count * 3);
-      for (let i = 0; i < pos.count; i++) {
-        p.fromBufferAttribute(pos, i);
-        n.fromBufferAttribute(nor, i).multiplyScalar(0.01).add(p);
-        skinned.applyBoneTransform(i, p).applyMatrix4(skinned.matrixWorld);
-        skinned.applyBoneTransform(i, n).applyMatrix4(skinned.matrixWorld).sub(p).normalize();
-        p.toArray(at, i * 3);
-        n.toArray(up, i * 3);
-      }
-      g.setAttribute('position', new THREE.BufferAttribute(at, 3));
-      g.setAttribute('normal', new THREE.BufferAttribute(up, 3));
-      if (from.attributes.uv) g.setAttribute('uv', from.attributes.uv);
-      g.setIndex(from.index);
-      still.add(new THREE.Mesh(g, skinned.material));
-    });
+    const still = freeze(root);
+    const p = new THREE.Vector3();
 
     const rider = new THREE.Group();
     rider.name = 'rider';

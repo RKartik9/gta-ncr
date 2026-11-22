@@ -1,6 +1,6 @@
 # Delhi Drive
 
-**Drive through real Central Delhi in your browser.** Connaught Place, India Gate, Kartavya Path and Lutyens' Delhi, built street by street from OpenStreetMap. Day and night, GPS waypoints, real car sounds and your own music. No install, no sign-up.
+**Drive through real Delhi in your browser.** About 240 km² of it, from the Red Fort and Old Delhi to Hauz Khas, and from Karol Bagh to the Yamuna, with Connaught Place, India Gate and Lutyens' Delhi at the centre. Built street by street from OpenStreetMap. Day and night, GPS waypoints, real car sounds and your own music. No install, no sign-up.
 
 **▶ Play now: [gta-ncr-ro.vercel.app](https://gta-ncr-ro.vercel.app/)**
 
@@ -14,13 +14,13 @@
 
 ## What's in it
 
-- **The real city.** Roads, buildings, parks and trees of central New Delhi come from OpenStreetMap. Connaught Place's white Georgian colonnades, the red sandstone ministries, India Gate and the 63 m flag over Central Park are all built in.
+- **The real city.** Roads, buildings, parks and trees of Delhi come from OpenStreetMap. Connaught Place's white Georgian colonnades, the red sandstone ministries, India Gate and the 63 m flag over Central Park are all built in.
 - **Day and night.** A full day passes in 24 minutes, or jump to night with N. After dark the sodium street lamps, shop signs and office windows come on, headlights switch on by themselves, and the cabin glows.
-- **Four cars and a bike.** A Lamborghini Sián FKP 37, a Mercedes-AMG G 63, a Mahindra Thar, a Hyundai Creta and a KTM 390 Duke, each with someone at the wheel (or on the saddle), on real suspension (Rapier physics) and tyres that slip: wheels spin and lock, the anti-lock brakes pulse, weight shifts under braking, the handbrake swings the tail out, and the tall G 63 leans and can go over. Switch with V.
+- **Four cars and a bike.** A Lamborghini Sián FKP 37, a Mercedes-AMG G 63, a Mahindra Thar, a Hyundai Creta and a KTM 390 Duke, each with someone at the wheel (or on the saddle), on real suspension (Rapier physics) and tyres that slip: wheels spin and lock, the anti-lock brakes pulse, weight shifts under braking, the handbrake swings the tail out, accelerate and brake together powerslide it, and the tall G 63 leans and can go over. Switch with V.
 - **Six cameras.** Chase, hood, cockpit, top-down, cinematic and a free drone. Drag to look around and use the wheel to zoom.
 - **GPS.** Open the map (M), click anywhere or pick a landmark, and follow the purple route along the roads. One-way streets are respected.
 - **Sound.** Recorded engine, tyre squeal, crashes and horn. Paste any YouTube video or playlist link into the menu to drive to your own music.
-- **Knock things over.** Bins, barricades, parked autos, lamp posts and traffic signals go flying or topple when you hit them. Trees don't move.
+- **Knock things over.** Bins, barricades, lamp posts and traffic signals go flying or topple when you hit them. Trees don't move.
 - **Runs anywhere.** WebGPU where the browser has it, WebGL 2 otherwise. Four quality presets, a resolution governor that holds the frame rate, and game controller support.
 - **Saves as you go.** Your place, car, clock and waypoint are kept in the browser.
 
@@ -29,6 +29,7 @@
 | Keyboard & mouse | | Controller | |
 |---|---|---|---|
 | <kbd>W A S D</kbd> / arrows | drive and steer | <kbd>RT</kbd> · <kbd>LT</kbd> | accelerate · brake and reverse |
+| <kbd>W</kbd> + <kbd>S</kbd> (hold, steer) | drift | <kbd>RT</kbd> + <kbd>LT</kbd> (hold, steer) | drift |
 | <kbd>Space</kbd> | handbrake | Left stick / d-pad | steer |
 | <kbd>H</kbd> (hold) | horn | Right stick | look around |
 | <kbd>L</kbd> | headlights | <kbd>A</kbd> ✕ | handbrake |
@@ -72,7 +73,7 @@ npm run dev:https    # https on your network, so a phone or another PC can use a
 - **[Rapier](https://rapier.rs/)** for physics: sprung ray-cast wheels with the game's own tyre model on top (`src/vehicle/vehicle.ts`), building walls as triangle meshes, and street furniture that sleeps until hit.
 - **Only the vicinity is drawn.** Each 1 km map cell is cut into 200 m chunks; chunks beyond the preset's draw distance are taken out of the scene and haze hides the edge. The pause menu's Graphics tab shows which graphics card the browser is using.
 - **TypeScript + [Vite](https://vite.dev/)**, with no UI framework.
-- **The map** is baked from OpenStreetMap (Overpass) by `tools/bake/bake.mjs` into 1 km cells under `public/tiles/`. Cells load and unload around the car as you drive.
+- **The map** is baked from OpenStreetMap (Overpass) by `tools/bake/bake.mjs` into 1 km cells under `public/tiles/`. Cells load and unload around the car as you drive; the GPS and the big map use `overview.json`, every road and park in one file.
 - **Sound** uses the Web Audio API. Recorded loops are pitched and filtered live, and music plays through the YouTube IFrame Player API.
 
 ```
@@ -97,6 +98,7 @@ tools/dev/           small self-checks (node tools/dev/<name>.ts)
 - **Hyundai Creta** model "2020 Hyundai ix25 - 2022 Hyundai Creta" by [Ddiaz Design](https://sketchfab.com/ddiaz-design), CC BY-NC 4.0 (non-commercial use only).
 - **KTM 390 Duke** model "Duke 390" by [574lhyglh](https://sketchfab.com/574lhyglh), CC BY 4.0, thinned from 980,000 triangles to 150,000.
 - **Driver** "Casual Man -RIGGED-" by [NABEEL619](https://sketchfab.com/NABEEL619), CC BY 4.0, posed in code.
+- **People on the pavements**, all CC BY 4.0, walked in code: "Arab Man -RIGGED-" by [NABEEL619](https://sketchfab.com/NABEEL619), "Guy ReadyPlayerMe Avatar" by [4licia](https://sketchfab.com/4licia), "avatar-full-body-female-ready-player-me" by [yhomi](https://sketchfab.com/yhomi), "Girl Avatar - Ready Player Me" by [Hellencam](https://sketchfab.com/Hellencam) and "Office lady Character" by [adabhade17](https://sketchfab.com/adabhade17) (links in `public/models/people/license.txt`).
 - **Engine sound** "Car Engine Loop" by qubodup ([OpenGameArt](https://opengameart.org/content/car-engine-loop-96khz-4s)), CC BY 3.0.
 - **Tyre, horn and crash sounds** from [freesound.org](https://freesound.org) (CC0) by audible-edge, keweldog, qubodup, squareal and magnuswaker. See [`public/sounds/CREDITS.txt`](public/sounds/CREDITS.txt).
 

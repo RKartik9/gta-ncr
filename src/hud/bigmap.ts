@@ -72,9 +72,11 @@ export class BigMap {
     window.addEventListener('resize', () => this.fit());
   }
 
-  /** The whole map, drawn once the GPS has every cell. */
+  /** The whole map's roads and parks, drawn once the GPS has them. */
   setTiles(tiles: Tile[]) {
-    this.image = drawTiles(tiles, this.grid.bounds, BAKED);
+    const b = this.grid.bounds;
+    // browsers refuse canvases much past 4096 px a side
+    this.image = drawTiles(tiles, b, Math.min(BAKED, 4096 / Math.max(b.maxX - b.minX, b.maxZ - b.minZ)));
   }
 
   get open() {
@@ -133,7 +135,7 @@ export class BigMap {
     g.fillStyle = '#16181a';
     g.fillRect(0, 0, w, h);
     if (this.image) {
-      g.imageSmoothingEnabled = this.zoom < BAKED * 1.5;
+      g.imageSmoothingEnabled = this.zoom < (this.image.width / (b.maxX - b.minX)) * 1.5;
       g.drawImage(this.image, sx(b.minX), sy(b.minZ), (b.maxX - b.minX) * this.zoom, (b.maxZ - b.minZ) * this.zoom);
     } else {
       g.fillStyle = '#9aa0a6';

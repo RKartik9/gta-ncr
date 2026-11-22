@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import type RAPIER from '@dimforge/rapier3d-compat';
-import { type Grid, type Tile, loadJson } from './tile.ts';
+import { type Grid, type Road, type Tile, loadJson } from './tile.ts';
 import { buildGround } from './ground.ts';
 import { buildBuildings } from './buildings.ts';
 import { buildProps } from './props.ts';
@@ -40,6 +40,8 @@ export class Streamer {
   private known: Set<string>;
   private grid: Grid;
   private dir: string;
+  /** every road in the city, with the box it covers (padded by half its width) */
+  private roads: { road: Road; minX: number; maxX: number; minZ: number; maxZ: number }[];
   private scene: THREE.Scene;
   private world: RAPIER.World;
   private treeDensity: number;
@@ -49,7 +51,7 @@ export class Streamer {
   /** cells whose nearest edge is closer than this are loaded, and dropped again well beyond it (so a cell does not flicker at a border) */
   private loadDistance: number;
 
-  constructor(grid: Grid, dir: string, scene: THREE.Scene, world: RAPIER.World, treeDensity: number, drawDistance: number, detailDistance: number) {
+  constructor(grid: Grid, dir: string, roads: Road[], scene: THREE.Scene, world: RAPIER.World, treeDensity: number, drawDistance: number, detailDistance: number) {
     this.drawDistance = drawDistance;
     this.detailDistance = Math.min(detailDistance, drawDistance);
     this.loadDistance = drawDistance + LOAD_AHEAD;
@@ -59,6 +61,10 @@ export class Streamer {
     this.world = world;
     this.treeDensity = treeDensity;
     this.known = new Set(grid.cells);
+    this.roads = roads.map((road) => {
+      const xs = road.pts.filter((_, i) => i % 2 === 0), zs = road.pts.filter((_, i) => i % 2 === 1), pad = road.width / 2 + 2;
+      return { road, minX: Math.min(...xs) - pad, maxX: Math.max(...xs) + pad, minZ: Math.min(...zs) - pad, maxZ: Math.max(...zs) + pad };
+    });
   }
 
   private rect(key: string) {
@@ -101,7 +107,11 @@ export class Streamer {
     chunks.group.name = `cell-${key}`;
     await buildGround(tile, chunks, budget);
     const city = await buildBuildings(tile, this.grid.plaza, chunks, budget);
-    const props = await buildProps(tile, this.grid.plaza, this.treeDensity, chunks, budget);
+    // A road belongs to the cell its middle is in, but runs on through others: the scenery is kept off (and
+    // planted along) every road that crosses this cell, not just the ones it owns.
+    const r = this.rect(key);
+    const near = this.roads.filter((b) => b.maxX >= r.minX && b.minX <= r.maxX && b.maxZ >= r.minZ && b.minZ <= r.maxZ).map((b) => b.road);
+    const props = await buildProps({ ...tile, roads: near }, this.grid.plaza, this.treeDensity, chunks, budget);
     // the solid world goes in a piece at a time as well: one cell is thousands of bodies
     const physics: Cell['physics'] = [];
     for (const walls of city.colliders) {

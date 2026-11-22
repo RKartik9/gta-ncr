@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { type CarSpec, HATCHBACK, axleHeight, restLength, rideHeight } from './cars.ts';
 import { clamp, lerp } from '../util.ts';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { numberPlateTexture, wheelTexture } from '../render/textures.ts';
 
 export interface CarWheel {
@@ -249,6 +250,58 @@ function wheelGeometry(r: number, hw: number) {
   return new THREE.LatheGeometry(pts, 28).rotateZ(Math.PI / 2);
 }
 
+/**
+ * A code-built car flattened for drawing many copies: everything on its body (shell, wheel arches, mirrors,
+ * number plates, a spare wheel) merged into one geometry with a group per material, standing on the road at
+ * the origin; and one wheel (tyre, then alloy faces). The cabin's insides are left out: the glass hides them.
+ */
+export function carShape(spec: CarSpec) {
+  const model = buildCodedCar(spec);
+  const body = model.group.children[0];
+  body.position.y = 0;
+  body.updateMatrixWorld(true);
+  const byMaterial = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  body.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || o.userData.interior || o.parent?.userData.interior) return;
+    const g = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
+    if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+    for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const groups = Array.isArray(mesh.material) ? g.groups : [{ start: 0, count: g.index ? g.index.count : g.attributes.position.count, materialIndex: 0 }];
+    for (const { start, count, materialIndex } of groups) {
+      const part = g.clone();
+      part.clearGroups();
+      if (g.index) part.setIndex(Array.from(g.index.array.slice(start, start + count)));
+      const flat = part.index ? part.toNonIndexed() : part;
+      const m = mats[materialIndex ?? 0];
+      (byMaterial.get(m) ?? byMaterial.set(m, []).get(m)!).push(flat);
+    }
+  });
+  const materials = [...byMaterial.keys()];
+  const shell = mergeGeometries(materials.map((m) => mergeGeometries(byMaterial.get(m)!)!), true)!;
+  const shellMats = (body.children.find((o) => Array.isArray((o as THREE.Mesh).material)) as THREE.Mesh).material as THREE.Material[];
+  const tyre = model.wheels[0].spin.children as THREE.Mesh[];
+  const wheel = mergeGeometries(tyre.map((m) => {
+    m.updateMatrix();
+    return m.geometry.clone().applyMatrix4(m.matrix);
+  }), true)!;
+  return {
+    shell, materials, wheel, wheelMaterials: tyre.map((m) => m.material as THREE.Material),
+    /** which of `materials` are the paint and the head and tail lamps */
+    paint: materials.indexOf(shellMats[PAINT]), head: materials.indexOf(shellMats[HEAD]), tail: materials.indexOf(shellMats[TAIL]),
+  };
+}
+
+/** A plain road wheel for the traffic's own vehicles: tyre, then alloy faces (material groups: rubber, alloy). */
+export function plainWheel(radius: number, halfWidth: number) {
+  const faces = [1, -1].map((side) => new THREE.CircleGeometry(radius * 0.66, 20).rotateY((side * Math.PI) / 2).translate(side * halfWidth * 0.85, 0, 0));
+  return {
+    wheel: mergeGeometries([wheelGeometry(radius, halfWidth), mergeGeometries(faces)!], true)!,
+    wheelMaterials: [new THREE.MeshStandardMaterial({ color: 0x151516, roughness: 0.86 }), new THREE.MeshStandardMaterial({ map: wheelTexture(), roughness: 0.35, metalness: 0.7 })] as THREE.Material[],
+  };
+}
+
 /** The stand-in car: used when a model file cannot be loaded. */
 export const buildHatchback = () => buildCodedCar(HATCHBACK);
 
@@ -342,6 +395,7 @@ export function buildCodedCar(wanted: CarSpec): CarModel {
   column.name = 'steering-wheel';
   const seats = new THREE.Mesh(new THREE.BoxGeometry(widest * 1.55, 0.5, 1.5), new THREE.MeshStandardMaterial({ color: 0x232426, roughness: 0.95 }));
   seats.position.set(0, eyeY - 0.65, eyeZ - 0.33);
+  dash.userData.interior = column.userData.interior = seats.userData.interior = true;
   body.add(dash, column, seats);
 
   let lit = false, braking = false;

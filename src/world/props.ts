@@ -7,6 +7,7 @@ import { type Budget, cached, mulberry32, pointInRing, ringArea } from '../util.
 import { Instances, instanced } from '../render/instances.ts';
 import { barkTexture, flagTexture, leafCardTexture, leafTexture } from '../render/textures.ts';
 import { onNight } from '../render/sky.ts';
+import { attribute, color, float, mix, texture, uniform, vec4 } from 'three/tsl';
 
 /** A material for `Instances`: everything that stands in the street is drawn as many copies of one shape. */
 const std = (p: ConstructorParameters<typeof THREE.MeshStandardNodeMaterial>[0], tinted = false) => instanced(new THREE.MeshStandardNodeMaterial(p), tinted);
@@ -262,6 +263,33 @@ export function poolTexture() {
   return t;
 }
 
+/** A soft round glow: a bright core fading out. For the halo round a lit lamp. */
+const glowTexture = () => cached('t-glow', () => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.12, 'rgba(255,255,255,0.85)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.22)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+});
+
+/** Glows are drawn without fog, additively and over everything behind them: a lit lamp shows down the whole street. */
+const glowMaterial = () => {
+  const m = instanced(new THREE.MeshBasicNodeMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide }));
+  return m;
+};
+
+/** 0 by day, 1 at night, for the glows' shaders */
+const nightLevel = uniform(0);
+onNight((n) => (nightLevel.value = n));
+
 const LAMP_HEAD = new THREE.Vector3(0, 8.38, 2.1);
 const SODIUM = 0xffb46b;
 
@@ -320,23 +348,39 @@ function buildLamps(tile: Tile, onRoad: ReturnType<typeof roadIndex>, chunks: Ch
     return m;
   });
 
+  // the halo round the lit lamp, seen from every side and from down the street: two crossed upright cards
+  const haloMat = cached('m-lamp-halo', () => {
+    const m = glowMaterial();
+    m.colorNode = vec4(color(SODIUM), texture(glowTexture()).a.mul(nightLevel).mul(0.9));
+    onNight((n) => (m.visible = n > 0.01));
+    return m;
+  });
+  const haloGeo = cached('g-lamp-halo', () => {
+    const at = LAMP_HEAD.clone().add(new THREE.Vector3(0, -0.2, 0));
+    return mergeGeometries([0, Math.PI / 2].map((a) => new THREE.PlaneGeometry(3.2, 3.2).rotateY(a).translate(at.x, at.y, at.z)))!;
+  });
+
   const heads: THREE.Vector3[] = [];
   const loose: Loose[] = [];
   const mats = [cached('m-lamp', () => std({ color: 0x74797c, roughness: 0.45, metalness: 0.85 })), lensMat];
   for (const [chunk, poses] of chunks.bucket(matrices, (m) => [m.elements[12], m.elements[14]])) {
     const mesh = new Instances(geo, mats, poses, true);
     mesh.castShadow = true;
+    const halo = new Instances(haloGeo, haloMat, poses, true);
+    halo.renderOrder = 3;
     const pool = new Instances(cached('g-pool', () => new THREE.PlaneGeometry(20, 20).rotateX(-Math.PI / 2).translate(LAMP_HEAD.x, 0.08, LAMP_HEAD.z)), poolMat, poses, true);
     pool.renderOrder = 2;
     const mine = poses.map((m) => LAMP_HEAD.clone().applyMatrix4(m));
     heads.push(...mine);
-    chunk.far.add(mesh, pool);
+    chunk.far.add(mesh, pool, halo);
     // a pole stands until something hits it hard enough; once it goes over, it no longer lights the road
     loose.push({
       mesh, poses, shape: 'cylinder', half: [0.11, 4.25, 0.11], lift: 4.25, drop: 4.25, mass: 95,
       onTopple: (i) => {
-        pool.setMatrixAt(i, GONE);
-        pool.instanceMatrix.needsUpdate = true;
+        for (const m of [pool, halo]) {
+          m.setMatrixAt(i, GONE);
+          m.instanceMatrix.needsUpdate = true;
+        }
         mine[i].set(1e9, 0, 1e9); // out of reach of `LampLights`
       },
     });
@@ -468,6 +512,10 @@ function roadIndex(tile: Tile) {
   };
 }
 
+const RED = new THREE.Color(1, 0, 0);
+/** Every signal mesh loaded, with where each copy stands and which way it faces, for the traffic to light by its phases. */
+export const signalMeshes = new Set<{ mesh: Instances; halo: Instances; spots: [number, number, number][]; phase?: number[] }>();
+
 function buildSignals(spots: [number, number, number][], chunks: Chunks): Loose[] {
   // the pole and head, then the three lamps, each its own material: one mesh, so the lot falls over together
   const geo = cached('g-signal', () => mergeGeometries([
@@ -476,11 +524,23 @@ function buildSignals(spots: [number, number, number][], chunks: Chunks): Loose[
   ], true)!);
   const mats = [
     cached('m-signal', () => std({ color: 0x1d1f1e, roughness: 0.6, metalness: 0.4 })),
-    ...[0xff2a1c, 0xffb21c, 0x24e06a].map((colour, k) => {
-      const on = k === 0;
-      return cached(`m-signal-lamp-${k}`, () => std({ color: on ? colour : 0x111111, emissive: colour, emissiveIntensity: on ? 6 : 0.15, roughness: 0.3 }));
-    }),
+    // each copy's tint says which of its lamps is lit (red, amber, green), so every signal shows its own phase
+    ...[0xff2a1c, 0xffb21c, 0x24e06a].map((colour, k) => cached(`m-signal-lamp-${k}`, () => {
+      const m = std({ roughness: 0.3 });
+      const on = attribute('icol', 'vec3')[(['x', 'y', 'z'] as const)[k]];
+      m.colorNode = vec4(mix(color(0x111111), color(colour), on), 1);
+      m.emissiveNode = color(colour).mul(mix(float(0.15), float(6), on));
+      return m;
+    })),
   ];
+  // a glow in front of each lamp, lit with it: faint by day, bright at night, and drawn as far as the street is
+  const haloGeo = cached('g-signal-halo', () => mergeGeometries([0, 1, 2].map((k) => new THREE.PlaneGeometry(1.5, 1.5).translate(0, 5.08 - k * 0.38, 0.4)), true)!);
+  const haloMats = [0xff2a1c, 0xffb21c, 0x24e06a].map((colour, k) => cached(`m-signal-halo-${k}`, () => {
+    const m = glowMaterial();
+    const on = attribute('icol', 'vec3')[(['x', 'y', 'z'] as const)[k]];
+    m.colorNode = vec4(color(colour), texture(glowTexture()).a.mul(on).mul(mix(float(0.25), float(1), nightLevel)));
+    return m;
+  }));
   const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
   const loose: Loose[] = [];
   for (const [chunk, here] of chunks.bucket(spots, ([x, z]) => [x, z])) {
@@ -489,9 +549,22 @@ function buildSignals(spots: [number, number, number][], chunks: Chunks): Loose[
       return new THREE.Matrix4().compose(new THREE.Vector3(sx, 0, sz), q, new THREE.Vector3(1, 1, 1));
     });
     const mesh = new Instances(geo, mats, poses, true);
+    const halo = new Instances(haloGeo, haloMats, poses, true);
+    halo.renderOrder = 3;
+    here.forEach((_, i) => {
+      mesh.setColorAt(i, RED);
+      halo.setColorAt(i, RED);
+    });
+    signalMeshes.add({ mesh, halo, spots: here });
     mesh.castShadow = true;
     chunk.near.add(mesh);
-    loose.push({ mesh, poses, shape: 'cylinder', half: [0.1, 2.6, 0.1], lift: 2.6, drop: 2.6, mass: 70 });
+    chunk.far.add(halo);
+    // a signal knocked over goes dark
+    const onTopple = (i: number) => {
+      halo.setMatrixAt(i, GONE);
+      halo.instanceMatrix.needsUpdate = true;
+    };
+    loose.push({ mesh, poses, shape: 'cylinder', half: [0.1, 2.6, 0.1], lift: 2.6, drop: 2.6, mass: 70, onTopple });
   }
   return loose;
 }
@@ -581,7 +654,6 @@ function buildLoose(tile: Tile, onRoad: (x: number, z: number, margin: number) =
   const up = new THREE.Vector3(0, 1, 0);
   const barricades: THREE.Matrix4[] = [];
   const bins: THREE.Matrix4[] = [];
-  const autos: THREE.Matrix4[] = [];
   const along = (r: Tile['roads'][number], spacing: number, offset: (side: number) => number, out: THREE.Matrix4[], lift: number, chance: number, margin: number, turn = Math.PI / 2) => {
     let carry = rnd() * spacing, side = 1;
     for (let i = 0; i + 3 < r.pts.length; i += 2) {
@@ -594,8 +666,8 @@ function buildLoose(tile: Tile, onRoad: (x: number, z: number, margin: number) =
         if (rnd() > chance) continue;
         const off = offset(side);
         const x = ax + (dx / len) * s - (dz / len) * off, z = az + (dz / len) * s + (dx / len) * off;
-        // never inside another road: a side street would be blocked
-        if (onRoad(x, z, margin)) continue;
+        // never inside another road (a side street would be blocked), and placed once, by the cell it stands in
+        if (!inside(tile, x, z) || onRoad(x, z, margin)) continue;
         const q = new THREE.Quaternion().setFromAxisAngle(up, Math.atan2(dx, dz) + turn + (rnd() - 0.5) * 0.2);
         out.push(new THREE.Matrix4().compose(new THREE.Vector3(x, lift, z), q, new THREE.Vector3(1, 1, 1)));
       }
@@ -605,8 +677,6 @@ function buildLoose(tile: Tile, onRoad: (x: number, z: number, margin: number) =
   for (const r of tile.roads) {
     if (isMajor(r)) along(r, 140, (side) => (r.width / 2 - 0.5) * side, barricades, 0.55, 0.7, -0.7);
     if (isStreet(r)) along(r, 60, (side) => (r.width / 2 + 0.8) * side, bins, 0.5, 0.8, 0.3);
-    // auto-rickshaws waiting at the kerb
-    if (isStreet(r) && r.width >= 6) along(r, 110, (side) => (r.width / 2 - 1) * side, autos, 0.85, 0.35, -1.1, 0);
   }
 
   const bollards = (tile.bollards ?? []).reduce<THREE.Matrix4[]>((out, _v, i, a) => {
@@ -641,30 +711,7 @@ function buildLoose(tile: Tile, onRoad: (x: number, z: number, margin: number) =
       chunk.near.add(mesh);
       return { mesh, poses, ...rest };
     });
-  // green CNG body, yellow canvas hood: the Delhi auto
-  const autoGeo = cached('g-auto', () => mergeGeometries([
-    mergeGeometries([
-      new THREE.BoxGeometry(1.3, 0.7, 2.5).translate(0, -0.3, 0),
-      new THREE.BoxGeometry(1.0, 0.8, 0.5).translate(0, 0.1, 1.05),
-    ])!,
-    mergeGeometries([
-      new THREE.BoxGeometry(1.4, 0.08, 2.0).translate(0, 0.82, -0.2),
-      new THREE.BoxGeometry(1.4, 1.0, 0.08).translate(0, 0.33, -1.2),
-    ])!,
-    mergeGeometries([
-      new THREE.CylinderGeometry(0.22, 0.22, 0.14, 12).rotateZ(Math.PI / 2).translate(0, -0.63, 1.1),
-      new THREE.CylinderGeometry(0.22, 0.22, 0.14, 12).rotateZ(Math.PI / 2).translate(0.6, -0.63, -0.9),
-      new THREE.CylinderGeometry(0.22, 0.22, 0.14, 12).rotateZ(Math.PI / 2).translate(-0.6, -0.63, -0.9),
-      new THREE.BoxGeometry(0.05, 1.0, 0.05).translate(0.62, 0.33, 0.78),
-      new THREE.BoxGeometry(0.05, 1.0, 0.05).translate(-0.62, 0.33, 0.78),
-    ])!,
-  ], true)!);
-  const autoGreen = cached('m-auto-green', () => std({ color: 0x1f7a3c, roughness: 0.35, metalness: 0.3 }));
-  const autoYellow = cached('m-auto-yellow', () => std({ color: 0xe6b81e, roughness: 0.7 }));
-  const black = cached('m-black', () => std({ color: 0x111111, roughness: 0.8 }));
-  const autoMats = [autoGreen, autoYellow, black];
   return [
-    ...make(autoGeo, autoMats, autos, { shape: 'box', half: [0.7, 0.85, 1.3], lift: 0.85, mass: 350 }),
     ...make(barricadeGeo, barricadeMats, barricades, { shape: 'box', half: [1.0, 0.55, 0.35], lift: 0.55, mass: 45 }),
     ...make(binGeo, binMat, bins, { shape: 'cylinder', half: [0.3, 0.5, 0.3], lift: 0.5, mass: 14 }),
     ...make(bollardGeo, bollardMat, bollards, { shape: 'cylinder', half: [0.13, 0.45, 0.13], lift: 0.45, mass: 30 }),

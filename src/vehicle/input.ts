@@ -58,6 +58,7 @@ export class Keyboard {
       this.padWas = [];
       this.pad = { throttle: 0, steer: 0, handbrake: false };
       this.look = { x: 0, y: 0 };
+      this.raw = { x: 0, y: 0, rt: 0, lt: 0 };
       this.onPadChange(null);
     });
   }
@@ -145,8 +146,12 @@ export class Keyboard {
     const held = (a: string, b: string) => (d.has(a) || d.has(b) ? 1 : 0);
     const keys = { throttle: held('ArrowUp', 'KeyW') - held('ArrowDown', 'KeyS'), steer: held('ArrowLeft', 'KeyA') - held('ArrowRight', 'KeyD') };
     const stronger = (a: number, b: number) => (Math.abs(a) >= Math.abs(b) ? a : b);
+    // accelerate and brake held together: a power slide, on the throttle
+    const keyDrift = !!held('ArrowUp', 'KeyW') && !!held('ArrowDown', 'KeyS');
+    const padDrift = this.raw.rt > 0.3 && this.raw.lt > 0.3;
     return {
-      throttle: stronger(keys.throttle, this.pad.throttle),
+      drift: keyDrift || padDrift,
+      throttle: keyDrift ? 1 : padDrift ? this.raw.rt : stronger(keys.throttle, this.pad.throttle),
       steer: stronger(keys.steer, this.pad.steer),
       handbrake: d.has('Space') || this.pad.handbrake,
     };

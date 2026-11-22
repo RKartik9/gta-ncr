@@ -22,6 +22,10 @@ export interface Quality {
   drawDistance: number;
   /** metres within which close-up detail is drawn: leaf sprays, street furniture, signals */
   detailDistance: number;
+  /** cars driving themselves round the streets near the player */
+  traffic: number;
+  /** people walking the pavements near the player; each is a whole figure, so they cost more than cars */
+  pedestrians: number;
   /** haze thick enough that scenery has faded into the sky by the draw distance, so nothing pops in */
   fog: number;
 }
@@ -31,19 +35,19 @@ export interface Quality {
 const PRESETS: Record<QualityName, Quality> = {
   low: {
     name: 'low', pixelRatio: 0.75, minPixelRatio: 0.5, maxPixelRatio: 1, shadowCascades: 1, shadowMapSize: 1024, shadowFar: 70,
-    ambientOcclusion: false, bloom: false, msaa: 0, treeDensity: 0.35, anisotropy: 2, lampLights: 2, headlightShadow: false, drawDistance: 240, detailDistance: 90, fog: 0.005,
+    ambientOcclusion: false, bloom: false, msaa: 0, treeDensity: 0.35, anisotropy: 2, lampLights: 2, headlightShadow: false, drawDistance: 240, detailDistance: 90, traffic: 22, pedestrians: 14, fog: 0.005,
   },
   medium: {
     name: 'medium', pixelRatio: 1, minPixelRatio: 0.6, maxPixelRatio: 1.25, shadowCascades: 1, shadowMapSize: 2048, shadowFar: 120,
-    ambientOcclusion: false, bloom: true, msaa: 0, treeDensity: 0.6, anisotropy: 4, lampLights: 4, headlightShadow: false, drawDistance: 320, detailDistance: 140, fog: 0.0037,
+    ambientOcclusion: false, bloom: true, msaa: 0, treeDensity: 0.6, anisotropy: 4, lampLights: 4, headlightShadow: false, drawDistance: 320, detailDistance: 140, traffic: 32, pedestrians: 26, fog: 0.0037,
   },
   high: {
     name: 'high', pixelRatio: 1.25, minPixelRatio: 0.75, maxPixelRatio: 1.5, shadowCascades: 2, shadowMapSize: 2048, shadowFar: 200,
-    ambientOcclusion: false, bloom: true, msaa: 4, treeDensity: 0.85, anisotropy: 8, lampLights: 6, headlightShadow: false, drawDistance: 420, detailDistance: 220, fog: 0.0029,
+    ambientOcclusion: false, bloom: true, msaa: 4, treeDensity: 0.85, anisotropy: 8, lampLights: 6, headlightShadow: false, drawDistance: 420, detailDistance: 220, traffic: 44, pedestrians: 40, fog: 0.0029,
   },
   ultra: {
     name: 'ultra', pixelRatio: 2, minPixelRatio: 1, maxPixelRatio: 2, shadowCascades: 3, shadowMapSize: 2048, shadowFar: 320,
-    ambientOcclusion: true, bloom: true, msaa: 4, treeDensity: 1, anisotropy: 16, lampLights: 12, headlightShadow: true, drawDistance: 600, detailDistance: 350, fog: 0.002,
+    ambientOcclusion: true, bloom: true, msaa: 4, treeDensity: 1, anisotropy: 16, lampLights: 12, headlightShadow: true, drawDistance: 600, detailDistance: 350, traffic: 64, pedestrians: 60, fog: 0.002,
   },
 };
 
@@ -117,7 +121,7 @@ export function saveQuality(q: QualityName | 'auto') {
 
 /**
  * ?q=low|medium|high|ultra beats the menu's saved choice, which beats the automatic pick.
- * ?cascades=, ?ao=, ?bloom=, ?msaa=, ?lamps= and ?hls= override single settings for comparisons.
+ * ?cascades=, ?ao=, ?bloom=, ?msaa=, ?lamps=, ?hls=, ?traffic= and ?peds= override single settings for comparisons.
  */
 export function pickQuality(gpu: Gpu): Quality {
   const q = query.get('q');
@@ -128,6 +132,8 @@ export function pickQuality(gpu: Gpu): Quality {
   if (query.has('bloom')) quality.bloom = query.get('bloom') !== '0';
   if (query.has('msaa')) quality.msaa = Number(query.get('msaa'));
   if (query.has('lamps')) quality.lampLights = Number(query.get('lamps'));
+  if (query.has('traffic')) quality.traffic = Number(query.get('traffic'));
+  if (query.has('peds')) quality.pedestrians = Number(query.get('peds'));
   if (query.has('hls')) quality.headlightShadow = query.get('hls') !== '0';
   return quality;
 }

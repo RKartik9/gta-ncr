@@ -583,7 +583,64 @@ const SHOPS_EN = ['SHARMA SWEETS', 'DELHI SAREE HOUSE', 'MOBILE WORLD', 'GUPTA C
 const SHOPS_HI = ['शर्मा मिष्ठान भंडार', 'दिल्ली साड़ी हाउस', 'गुप्ता केमिस्ट', 'चाय', 'किताब घर', 'खादी भंडार', 'पान भंडार', 'ज्वैलर्स'];
 const SIGN_COLOURS = ['#b3261e', '#1f4e8c', '#0f6b46', '#d08a12', '#5a2a7a', '#11110f', '#c2410c', '#0e7490', '#f2efe6'];
 
-/** A 32 m run of street-level shopfronts: signboards, shutters and glass. */
+/**
+ * An open shop seen from the street, filling (left, top, iw, ih): the shutter rolled up, a lit room, shelves of
+ * stock up the back wall, someone minding the counter and goods laid out on it.
+ */
+function openShop(g: CanvasRenderingContext2D, left: number, top: number, iw: number, ih: number, rnd: () => number) {
+  const bottom = top + ih;
+  const warm = rnd() < 0.5;
+  const grad = g.createLinearGradient(0, top, 0, bottom);
+  grad.addColorStop(0, warm ? '#f3dfb6' : '#e6eef2');
+  grad.addColorStop(0.55, warm ? '#c9ab7c' : '#b8c4c8');
+  grad.addColorStop(1, '#6a5a46');
+  g.fillStyle = grad;
+  g.fillRect(left, top, iw, ih);
+  // rolled-up shutter
+  g.fillStyle = '#7d7a74';
+  g.fillRect(left, top, iw, 9);
+  g.fillStyle = 'rgba(0,0,0,0.3)';
+  g.fillRect(left, top + 9, iw, 3);
+  // shelves, and the stock on them
+  const shelfColour = rnd() < 0.5 ? '#6b4a2b' : '#9a9a96';
+  for (let sy = top + 26; sy < top + ih * 0.62; sy += 24) {
+    g.fillStyle = shelfColour;
+    g.fillRect(left + 6, sy + 16, iw - 12, 4);
+    for (let gx = left + 8; gx < left + iw - 10; ) {
+      const bw = 5 + rnd() * 12, bh = 7 + rnd() * 9;
+      g.fillStyle = `hsl(${Math.floor(rnd() * 360)},${45 + rnd() * 45}%,${35 + rnd() * 35}%)`;
+      g.fillRect(gx, sy + 16 - bh, bw, bh);
+      gx += bw + 1 + rnd() * 3;
+    }
+  }
+  // tube lights
+  g.fillStyle = '#fffdf2';
+  g.fillRect(left + 22, top + 15, iw * 0.35, 3);
+  g.fillRect(left + iw - 22 - iw * 0.35, top + 15, iw * 0.35, 3);
+  // the shopkeeper behind the counter
+  const kx = left + 28 + rnd() * (iw - 70), ky = bottom - 62;
+  g.fillStyle = ['#e8e4da', '#3b6ea5', '#a33b3b', '#e0b84a', '#4f7d4a'][Math.floor(rnd() * 5)];
+  g.beginPath();
+  g.ellipse(kx, ky + 24, 15, 22, 0, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = '#8a5a3c';
+  g.beginPath();
+  g.arc(kx, ky - 4, 8, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = '#1d1712';
+  g.fillRect(kx - 8, ky - 13, 16, 5);
+  // counter, with goods on it
+  g.fillStyle = '#5a3e26';
+  g.fillRect(left, bottom - 34, iw, 34);
+  g.fillStyle = '#7a5a3a';
+  g.fillRect(left, bottom - 36, iw, 5);
+  for (let k = 0; k < 7; k++) {
+    g.fillStyle = `hsl(${Math.floor(rnd() * 360)},70%,${45 + rnd() * 20}%)`;
+    g.fillRect(left + 6 + rnd() * (iw - 24), bottom - 36 - 6 - rnd() * 6, 8 + rnd() * 10, 6 + rnd() * 6);
+  }
+}
+
+/** A 32 m run of street-level shopfronts: signboards over open, lit shops (the odd one shuttered). */
 export function shopfrontTexture(): Facade {
   const shops = 8;
   const sw = 256;
@@ -628,37 +685,20 @@ export function shopfrontTexture(): Facade {
     g.fillRect(x + 6, 72, sw - 12, 8);
     const top = 80;
     const bottom = h - 14;
-    if (rnd() < 0.3) {
-      // rolled-down shutter
+    if (rnd() < 0.06) {
+      // the odd one shut: a rolled-down shutter
       const v = 120 + rnd() * 60;
       g.fillStyle = `rgb(${v},${v},${v + 6})`;
       g.fillRect(x + 12, top, sw - 24, bottom - top);
       g.fillStyle = 'rgba(0,0,0,0.22)';
       for (let y = top; y < bottom; y += 7) g.fillRect(x + 12, y, sw - 24, 2);
     } else {
-      // dark interior behind glass, with stock on display
-      const grad = g.createLinearGradient(0, top, 0, bottom);
-      grad.addColorStop(0, '#15120f');
-      grad.addColorStop(1, '#3d342a');
-      g.fillStyle = grad;
-      g.fillRect(x + 12, top, sw - 24, bottom - top);
+      // open for business
+      const iw = sw - 24, ih = bottom - top;
+      openShop(g, x + 12, top, iw, ih, rnd);
       og.fillStyle = 'rgb(255,40,150)';
-      og.fillRect(x + 12, top, sw - 24, bottom - top);
-      glowRects.push([x + 12, top, sw - 24, bottom - top]);
-      for (let k = 0; k < 26; k++) {
-        g.fillStyle = `hsla(${rnd() * 360},${50 + rnd() * 40}%,${40 + rnd() * 30}%,0.85)`;
-        g.fillRect(x + 20 + rnd() * (sw - 60), top + 30 + rnd() * (bottom - top - 60), 8 + rnd() * 20, 10 + rnd() * 24);
-      }
-      // warm tube light
-      g.fillStyle = 'rgba(255,236,190,0.75)';
-      g.fillRect(x + 30, top + 10, sw - 60, 4);
-      g.strokeStyle = '#8c8880';
-      g.lineWidth = 3;
-      g.strokeRect(x + 12, top, sw - 24, bottom - top);
-      g.beginPath();
-      g.moveTo(x + sw * 0.62, top);
-      g.lineTo(x + sw * 0.62, bottom);
-      g.stroke();
+      og.fillRect(x + 12, top, iw, ih);
+      glowRects.push([x + 12, top, iw, ih]);
     }
     // party wall
     g.fillStyle = '#8f8778';
@@ -672,7 +712,7 @@ export function shopfrontTexture(): Facade {
   // signboards and open shops light up; shutters and walls stay dark
   for (const [x, y, rw, rh] of glowRects) eg.drawImage(c, x, y, rw, rh, x, y, rw, rh);
   eg.globalCompositeOperation = 'lighter';
-  eg.fillStyle = 'rgba(90,70,40,1)';
+  eg.fillStyle = 'rgba(120,95,55,1)';
   for (const [x, y, rw, rh] of glowRects) if (y > 20) eg.fillRect(x, y, rw, rh);
   return { map: tex(c), orm: tex(oc, false), glow: tex(ec), width: shops * 4, height: 4.2, bays: shops, floors: 1 };
 }
@@ -693,7 +733,7 @@ export function colonnadeTexture(): Facade {
   const rnd = mulberry32(121);
   for (let i = 0; i < bays; i++) {
     const x = i * bw;
-    // the arcade behind: dark, with glowing shop windows
+    // the arcade behind: shaded, with a lit shop open in every bay
     const grad = g.createLinearGradient(0, 0, 0, h);
     grad.addColorStop(0, '#0e0d0c');
     grad.addColorStop(1, '#2b2722');
@@ -701,14 +741,10 @@ export function colonnadeTexture(): Facade {
     g.fillRect(x, 0, bw, h);
     g.fillStyle = `hsla(${rnd() * 360},70%,45%,0.9)`;
     g.fillRect(x + 50, 70, bw - 100, 34);
-    g.fillStyle = 'rgba(255,225,170,0.55)';
-    g.fillRect(x + 56, 120, bw - 112, 130);
-    for (let k = 0; k < 10; k++) {
-      g.fillStyle = `hsla(${rnd() * 360},60%,45%,0.8)`;
-      g.fillRect(x + 62 + rnd() * (bw - 150), 140 + rnd() * 80, 14 + rnd() * 16, 20 + rnd() * 26);
-    }
-    // the shop windows glow at night; the columns, drawn next, stand in front of them
-    eg.drawImage(c, x + 50, 70, bw - 100, 180, x + 50, 70, bw - 100, 180);
+    // an open shop under each arch
+    openShop(g, x + 40, 110, bw - 80, h - 110 - 18, rnd);
+    // the signs and shops glow at night; the columns, drawn next, stand in front of them
+    eg.drawImage(c, x + 40, 70, bw - 80, h - 70 - 18, x + 40, 70, bw - 80, h - 70 - 18);
   }
   // entablature
   g.fillStyle = '#efebe1';
