@@ -17,7 +17,9 @@ export interface Progress {
   headlights: boolean | null;
 }
 
-const KEY = 'delhi-drive:progress:v1';
+import { CITY } from './config.ts';
+
+const KEY = `delhi-drive:progress:v1${CITY === 'delhi' ? '' : `:${CITY}`}`;
 const finite = (...n: unknown[]) => n.every((v) => typeof v === 'number' && Number.isFinite(v));
 
 export function loadProgress(): Progress | null {

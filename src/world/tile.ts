@@ -1,3 +1,5 @@
+import { pointInRing } from '../util.ts';
+
 export interface Road {
   id: number;
   kind: string;
@@ -9,6 +11,8 @@ export interface Road {
   layer: number;
   /** flat [x0, z0, x1, z1, ...] in metres; x is east, z is south */
   pts: number[];
+  /** a flyover: the deck's height above the ground at each point (absent for a road on the ground) */
+  elev?: number[];
 }
 
 export interface Path {
@@ -36,7 +40,7 @@ export interface Building {
 
 export interface Area {
   id: number;
-  kind: 'green' | 'water';
+  kind: 'green' | 'water' | 'sand';
   name?: string;
   outer: number[];
 }
@@ -70,7 +74,7 @@ export interface Grid {
   cols: number;
   rows: number;
   spawn: [number, number];
-  /** centre of the Connaught Place central park, where the flag flies */
+  /** centre of the Connaught Place central park, where the flag flies (null in the bake of a city without one) */
   plaza: [number, number];
   /** `${col}_${row}` of every cell that has anything in it */
   cells: string[];
@@ -78,7 +82,8 @@ export interface Grid {
 
 export async function loadJson<T>(path: string): Promise<T> {
   const res = await fetch(`${import.meta.env.BASE_URL}tiles/${path}.json`);
-  if (!res.ok) throw new Error(`tiles/${path}: HTTP ${res.status}`);
+  // the dev server answers a missing file with the game's own page, not a 404
+  if (!res.ok || !res.headers.get('content-type')?.includes('json')) throw new Error(`the map tiles/${path}.json is missing (not baked yet?)`);
   return res.json();
 }
 
@@ -107,6 +112,47 @@ export function nearestRoad(tiles: Tile[], x: number, z: number, accept: (r: Roa
       const d = Math.hypot(x - px, z - pz);
       if (!best || d < best.distance) best = { road, x: px, z: pz, heading: Math.atan2(dx, dz), distance: d };
     }
+  }
+  return best;
+}
+
+const boxes = new WeakMap<Area, [number, number, number, number]>();
+/**
+ * True where (x, z) is open water: inside a sea, lake or tank and not on a road that crosses it (the Sea Link, a
+ * causeway). The car is never let in; the game holds it at the water's edge instead.
+ */
+export function offRoadInWater(tiles: Tile[], x: number, z: number) {
+  let wet = false;
+  for (const t of tiles) for (const a of t.areas) {
+    if (a.kind !== 'water' || wet) continue;
+    let b = boxes.get(a);
+    if (!b) {
+      b = [Infinity, Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < a.outer.length; i += 2) {
+        b[0] = Math.min(b[0], a.outer[i]); b[1] = Math.min(b[1], a.outer[i + 1]);
+        b[2] = Math.max(b[2], a.outer[i]); b[3] = Math.max(b[3], a.outer[i + 1]);
+      }
+      boxes.set(a, b);
+    }
+    if (x >= b[0] && x <= b[2] && z >= b[1] && z <= b[3] && pointInRing(x, z, a.outer)) wet = true;
+  }
+  if (!wet) return false;
+  const hit = nearestRoad(tiles, x, z);
+  return !hit || hit.distance > hit.road.width / 2 + 1.5;
+}
+
+/** Height of the road surface at (x, z): a flyover deck's where one passes overhead within its width, otherwise the ground's 0. */
+export function deckHeight(tiles: Tile[], x: number, z: number) {
+  const hit = nearestRoad(tiles, x, z, (r) => !!r.elev);
+  if (!hit || hit.distance > hit.road.width / 2 + 0.5) return 0;
+  const p = hit.road.pts, e = hit.road.elev!;
+  let best = 0, d = Infinity;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const dx = p[i + 2] - p[i], dz = p[i + 3] - p[i + 1], l = dx * dx + dz * dz;
+    if (!l) continue;
+    const t = Math.max(0, Math.min(1, ((x - p[i]) * dx + (z - p[i + 1]) * dz) / l));
+    const dd = Math.hypot(x - p[i] - dx * t, z - p[i + 1] - dz * t);
+    if (dd < d) [d, best] = [dd, e[i / 2] + (e[i / 2 + 1] - e[i / 2]) * t];
   }
   return best;
 }

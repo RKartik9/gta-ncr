@@ -1,21 +1,21 @@
 import * as THREE from 'three/webgpu';
-import { QUALITY_NAMES, type QualityName, detectGpu, pickQuality, query, saveQuality, savedQuality } from './config.ts';
+import { CITY, QUALITY_NAMES, type QualityName, detectGpu, pickQuality, query, saveQuality, savedQuality } from './config.ts';
 import { type Progress, clearProgress, loadProgress, saveProgress } from './save.ts';
 import { backendName, createPipeline, createRenderer, resolutionGovernor, setupShadows } from './render/renderer.ts';
 import { DayNight, onNight } from './render/sky.ts';
 import { setAnisotropy } from './render/textures.ts';
-import { type Grid, type Tile, loadJson, nearestRoad } from './world/tile.ts';
+import { type Grid, type Tile, deckHeight, loadJson, nearestRoad, offRoadInWater } from './world/tile.ts';
 import { RoadGraph } from './world/route.ts';
 import { Gps } from './world/gps.ts';
 import { BigMap } from './hud/bigmap.ts';
-import { ROAD_HEIGHT, buildBasePlane, isMajor, isStreet } from './world/ground.ts';
+import { ROAD_HEIGHT, buildBasePlane, hasPavement, isMajor, isStreet } from './world/ground.ts';
 import { LampLights } from './world/props.ts';
 import { STEP, createPhysics, stepWorld } from './world/physics.ts';
 import { Streamer } from './world/streamer.ts';
 import { Traffic } from './world/traffic.ts';
 import { Pedestrians } from './world/pedestrians.ts';
 import { buildLandmarks, neighbourhood } from './world/landmarks.ts';
-import { CARS, type CarSpec, axleHeight, restLength } from './vehicle/cars.ts';
+import { CARS, type CarSpec, axleHeight, restLength, rideHeight } from './vehicle/cars.ts';
 import { loadGarage, loadImported, setupImporter } from './vehicle/garage.ts';
 import { seatRider } from './vehicle/rider.ts';
 import { CarLamps, type CarModel, buildCodedCar, buildHatchback } from './vehicle/carModel.ts';
@@ -32,6 +32,16 @@ const RESUME = 'delhi-drive:resume';
 async function boot() {
   const gpu = detectGpu();
   const quality = pickQuality(gpu);
+  if (CITY === 'mumbai') {
+    // its own title and pictures: the Sea Link, Marine Drive and the Gateway, taken in the game
+    document.title = 'Namaste Bombay · drive from Bandra to Colaba in your browser';
+    document.querySelector('#loading h1')!.innerHTML = 'Namaste<br><span>Bombay</span>';
+    document.getElementById('brand')!.textContent = 'Namaste Bombay';
+    for (const a of document.querySelectorAll('#loading .cities a')) a.classList.toggle('active', (a as HTMLElement).dataset.city === CITY);
+    document.querySelectorAll<HTMLElement>('#loading .panel i').forEach((el, k) => {
+      el.style.backgroundImage = `url(loading/mumbai-${['sealink', 'marine-drive', 'gateway'][k]}.jpg)`;
+    });
+  }
   // Saved progress, unless the address asks for a particular start (?x=&z=) or a clean one (?fresh).
   const stored = query.has('x') || query.has('fresh') ? null : loadProgress();
   // The title screen asks: carry on, or a new game. An address that says how to start (any ?option, as the dev
@@ -43,21 +53,24 @@ async function boot() {
   } catch {
     // storage blocked: there is nothing saved to resume either
   }
-  const asked = query.size === 0 && !resuming;
+  // ?city= only says which map: the title screen still asks
+  const asked = [...query.keys()].every((k) => k === 'city') && !resuming;
   const saved = !asked || (await chooseStart(!!stored)) ? stored : null;
   const canvas = document.getElementById('view') as HTMLCanvasElement;
 
   // every road in the city: the GPS, the big map and the traffic need it, and so does each map cell, to keep
   // its trees and poles off roads that belong to the cell next door. Fetched while the renderer starts.
-  const overviewLoad = loadJson<Tile>('central/overview');
+  const area = CITY === 'mumbai' ? 'mumbai' : 'central';
+  const overviewLoad = loadJson<Tile>(`${area}/overview`);
   setLoading('Starting the renderer…', false, 0.05);
   const renderer = await createRenderer(canvas, quality, query.has('gl'));
   setAnisotropy(Math.min(quality.anisotropy, renderer.getMaxAnisotropy()));
 
-  setLoading('Loading the map of central Delhi…', false, 0.12);
-  const area = 'central';
+  setLoading(`Loading the map of ${CITY === 'mumbai' ? 'South Bombay' : 'central Delhi'}…`, false, 0.12);
   const grid = await loadJson<Grid>(`${area}/index`);
   const all = await overviewLoad;
+  // no Connaught Place here: nothing is a Georgian block and no flag flies
+  if (!grid.plaza) grid.plaza = [Infinity, Infinity];
   const plaza = grid.plaza;
 
   const scene = new THREE.Scene();
@@ -69,7 +82,7 @@ async function boot() {
   const sun = daynight.sun;
   scene.add(buildBasePlane(grid.bounds));
   const world = await createPhysics(grid.bounds);
-  buildLandmarks(scene, world);
+  buildLandmarks(scene, world, all.roads);
 
   // Cars load once and are kept, so switching back is instant.
   const models = new Map<string, Promise<CarModel>>();
@@ -77,11 +90,12 @@ async function boot() {
   const lampLights = new LampLights(scene, [], quality.lampLights);
   // in the scene from the start, so its shaders are built behind the loading screen
   const traffic = new Traffic(scene, world, quality.traffic, quality.drawDistance);
-  const pedestrians = new Pedestrians(scene, world, quality.pedestrians);
+  // Bombay's pavements are far busier than Delhi's
+  const pedestrians = new Pedestrians(scene, world, Math.round(quality.pedestrians * (CITY === 'mumbai' ? 1.8 : 1)));
   const streamer = new Streamer(grid, area, all.roads, scene, world, quality.treeDensity, quality.drawDistance, quality.detailDistance);
   let booting = true, built = 0;
   streamer.onChange = (added, removed) => {
-    if (added && booting) setLoading(`Building the city… ${++built} blocks of Delhi`, false, 0.18 + Math.min(0.7, built * 0.07));
+    if (added && booting) setLoading(`Building the city… ${++built} blocks of ${CITY === 'mumbai' ? 'Bombay' : 'Delhi'}`, false, 0.18 + Math.min(0.7, built * 0.07));
     if (added) hud.addCell(added.key, added.tile);
     if (removed) hud.removeCell(removed);
     lampLights.heads = streamer.lampHeads;
@@ -101,7 +115,9 @@ async function boot() {
   };
 
   // Start on the Inner Circle, facing the way its one-way traffic runs; ?x=&z= starts anywhere on the map.
-  const startX = Number(query.get('x') ?? saved?.x ?? plaza[0] + 120), startZ = Number(query.get('z') ?? saved?.z ?? plaza[1] + 150);
+  // (in Mumbai: on the Sea Link out of Bandra, heading for Worli)
+  const [homeX, homeZ] = CITY === 'delhi' ? [plaza[0] + 120, plaza[1] + 150] : grid.spawn;
+  const startX = Number(query.get('x') ?? saved?.x ?? homeX), startZ = Number(query.get('z') ?? saved?.z ?? homeZ);
   setLoading('Building the city…');
   await streamer.update(startX, startZ);
   const spawnAt = (x: number, z: number) => {
@@ -122,7 +138,8 @@ async function boot() {
   setupImporter(() => model.spec);
   let carIndex = Math.max(0, CARS.findIndex((c) => c.id === (query.get('car') ?? saved?.car)));
   let model = await getModel(CARS[carIndex]);
-  let vehicle = new Vehicle(world, model.spec, start.x, start.z, start.heading);
+  // a car saved (or started) on a flyover or the Sea Link is set down on its deck
+  let vehicle = new Vehicle(world, model.spec, start.x, start.z, start.heading, deckHeight(streamer.tiles, start.x, start.z));
   scene.add(model.group);
   hud.setCar(model.spec.name, model.spec.credit ?? '');
 
@@ -137,11 +154,13 @@ async function boot() {
     const incoming = await getModel(CARS[next]);
     const p = vehicle.body.translation();
     const heading = vehicle.heading;
+    // the road under the old car (a flyover deck, or the ground below one), for the new one to stand on
+    const ground = Math.max(0, p.y - rideHeight(model.spec) - 0.3);
     vehicle.dispose();
     scene.remove(model.group);
     carIndex = next;
     model = incoming;
-    vehicle = new Vehicle(world, model.spec, p.x, p.z, heading);
+    vehicle = new Vehicle(world, model.spec, p.x, p.z, heading, ground);
     scene.add(model.group);
     carLamps.attach(model);
     readPose(current);
@@ -176,7 +195,7 @@ async function boot() {
 
   function resetCar() {
     const p = vehicle.body.translation();
-    const hit = nearestRoad(streamer.tiles, p.x, p.z, isStreet) ?? nearestRoad(streamer.tiles, p.x, p.z);
+    const hit = nearestRoad(streamer.tiles, p.x, p.z, (r) => isStreet(r) && !r.elev) ?? nearestRoad(streamer.tiles, p.x, p.z, (r) => !r.elev);
     if (!hit) return;
     // keep the way the car was facing rather than snapping it round to the way the road was drawn
     const along = Math.cos(hit.heading - vehicle.heading) >= 0 ? hit.heading : hit.heading + Math.PI;
@@ -209,8 +228,8 @@ async function boot() {
     hud.say(p ? (gps.ready ? 'Waypoint set' : 'Waypoint set: working out the route…') : 'Waypoint cleared');
   };
   gps.setGraph(new RoadGraph(all.roads), carPos());
-  traffic.setRoads(all.roads.filter(isStreet), all.signals, carPos().x, carPos().z);
-  pedestrians.setRoads(all.roads.filter(isStreet));
+  traffic.setRoads(all.roads.filter((r) => isStreet(r) && !r.elev), all.signals, carPos().x, carPos().z);
+  pedestrians.setRoads(all.roads.filter(hasPavement));
   traffic.walkers = pedestrians.positions;
   bigmap.setTiles([all]);
   const toggleMap = (open = !bigmap.open) => {
@@ -278,6 +297,8 @@ async function boot() {
   const perf = { fps: 0, ms: 0, worst: 0, frames: 0, time: 0, peak: 0, drawCalls: 0, triangles: 0, cpu: 0, busy: 0 };
   let last = performance.now();
   let lag = 0;
+  /** the last place the car stood on land or road, where it is held if it runs into the water */
+  const dry = new THREE.Vector2(start.x, start.z);
   let roadTimer = 0;
   let firstFrame = true;
 
@@ -448,6 +469,12 @@ async function boot() {
       traffic.step(STEP, current.p.x, current.p.z);
       stepWorld(world);
       readPose(current);
+      // the sea is not a road: a car that runs off the land (or off the Sea Link) is stopped at the water's edge
+      if (offRoadInWater(streamer.tiles, current.p.x, current.p.z)) {
+        vehicle.place(dry.x, dry.y, vehicle.heading, deckHeight(streamer.tiles, dry.x, dry.y));
+        readPose(current);
+        previous.p.copy(current.p);
+      } else dry.set(current.p.x, current.p.z);
       lag -= STEP;
       steps++;
     }
@@ -516,6 +543,7 @@ async function boot() {
 
     director.update(dt, model.group, vehicle, spec);
     shadows.follow(model.group.position);
+    daynight.follow(camera.position);
     hud.update(vehicle.speed, model.group.position.x, model.group.position.z, vehicle.heading, gps.route, gps.waypoint);
 
     roadTimer -= dt;
@@ -580,7 +608,7 @@ async function boot() {
       switchCar,
       place: (x: number, z: number, headingDeg: number) => {
         void streamer.update(x, z);
-        vehicle.place(x, z, THREE.MathUtils.degToRad(headingDeg));
+        vehicle.place(x, z, THREE.MathUtils.degToRad(headingDeg), deckHeight(streamer.tiles, x, z));
         readPose(current);
         readPose(previous);
         director.cut();

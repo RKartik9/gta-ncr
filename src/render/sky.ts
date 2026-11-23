@@ -121,6 +121,12 @@ export class DayNight {
     this.hour = this.night > 0.5 ? 12 : 22;
   }
 
+  /** The sky is a box 10 km across: it travels with the camera, or past 5 km from the map's origin there is no sky. */
+  follow(p: THREE.Vector3) {
+    this.sky.position.set(p.x, 0, p.z);
+    this.stars.position.set(p.x, 0, p.z);
+  }
+
   update(dt: number) {
     if (this.running) this.hour = (this.hour + dt * this.speed) % 24;
     const { elevation, dir } = sunAt(this.hour);

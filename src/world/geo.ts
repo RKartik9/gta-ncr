@@ -92,9 +92,11 @@ export class GeoBuilder {
 }
 
 /** Flat ribbon of constant width along a polyline, with mitred joins and round ends. */
-export function ribbon(b: GeoBuilder, pts: ArrayLike<number>, width: number, y: number, uvScale: number, roundEnds: boolean) {
+/** `lift`, if given, raises each point by that much (a flyover's deck). Returns the left and right edge at each point, flat [lx, lz, rx, rz, ...]. */
+export function ribbon(b: GeoBuilder, pts: ArrayLike<number>, width: number, y: number, uvScale: number, roundEnds: boolean, lift?: ArrayLike<number>) {
   const n = pts.length / 2;
-  if (n < 2) return;
+  const edges: number[] = [];
+  if (n < 2) return edges;
   const half = width / 2;
   let prevL = -1, prevR = -1;
   for (let i = 0; i < n; i++) {
@@ -117,8 +119,10 @@ export function ribbon(b: GeoBuilder, pts: ArrayLike<number>, width: number, y: 
     const cos = nx * (-az / al) + nz * (ax / al);
     const m = half / Math.max(0.5, cos);
     const lx = x + nx * m, lz = z + nz * m, rx = x - nx * m, rz = z - nz * m;
-    const l = b.vert(lx, y, lz, 0, 1, 0, lx / uvScale, lz / uvScale);
-    const r = b.vert(rx, y, rz, 0, 1, 0, rx / uvScale, rz / uvScale);
+    const h = y + (lift?.[i] ?? 0);
+    edges.push(lx, lz, rx, rz);
+    const l = b.vert(lx, h, lz, 0, 1, 0, lx / uvScale, lz / uvScale);
+    const r = b.vert(rx, h, rz, 0, 1, 0, rx / uvScale, rz / uvScale);
     if (i > 0) {
       b.triUp(prevL, prevR, l);
       b.triUp(prevR, r, l);
@@ -130,6 +134,7 @@ export function ribbon(b: GeoBuilder, pts: ArrayLike<number>, width: number, y: 
     disc(b, pts[0], pts[1], half, y, uvScale);
     disc(b, pts[n * 2 - 2], pts[n * 2 - 1], half, y, uvScale);
   }
+  return edges;
 }
 
 export function disc(b: GeoBuilder, x: number, z: number, radius: number, y: number, uvScale: number, segments = 14) {

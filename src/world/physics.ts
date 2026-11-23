@@ -101,8 +101,10 @@ interface LooseLike {
  * One map cell's solid parts. Building walls and trunks and poles are fixed; street furniture becomes bodies that sleep until the car hits them.
  * `syncProps` copies the moving ones back into their instanced meshes; `dispose` takes everything out of the world.
  */
-export function addProps(world: RAPIER.World, solids: SolidLike[], loose: LooseLike[], walls?: { vertices: Float32Array; indices: Uint32Array }) {
+export function addProps(world: RAPIER.World, solids: SolidLike[], loose: LooseLike[], walls?: { vertices: Float32Array; indices: Uint32Array }, deck?: { vertices: Float32Array; indices: Uint32Array }) {
   const colliders: RAPIER.Collider[] = [];
+  // a flyover's road surface is ground like any other: the tyres pass through it and the suspension's rays stand on it
+  if (deck?.indices.length) colliders.push(world.createCollider(RAPIER.ColliderDesc.trimesh(deck.vertices, deck.indices).setFriction(1).setCollisionGroups(GROUND_GROUPS)));
   if (walls?.indices.length) colliders.push(world.createCollider(RAPIER.ColliderDesc.trimesh(walls.vertices, walls.indices).setFriction(0.3).setCollisionGroups(WALL_GROUPS)));
   for (const s of solids) {
     colliders.push(world.createCollider(RAPIER.ColliderDesc.cylinder(s.h / 2, s.r).setTranslation(s.x, s.h / 2, s.z).setFriction(0.5)));

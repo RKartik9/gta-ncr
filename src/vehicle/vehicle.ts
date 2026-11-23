@@ -100,7 +100,8 @@ export class Vehicle {
   private reverse = false;
   private world: RAPIER.World;
 
-  constructor(world: RAPIER.World, spec: CarSpec, x: number, z: number, heading: number) {
+  /** `ground` is the height of the road under (x, z): above 0 on a flyover or the Sea Link. */
+  constructor(world: RAPIER.World, spec: CarSpec, x: number, z: number, heading: number, ground = 0) {
     this.world = world;
     this.spec = spec;
     // The tyres and the air do the slowing down; damping here is only to settle a car tumbling through the air.
@@ -158,7 +159,7 @@ export class Vehicle {
       // Rapier's own tyres are switched off: it does the springs, `update` does the grip.
       this.controller.setWheelFrictionSlip(n, 0);
     });
-    this.place(x, z, heading);
+    this.place(x, z, heading, ground);
   }
 
   dispose() {
@@ -166,8 +167,8 @@ export class Vehicle {
     this.world.removeRigidBody(this.body);
   }
 
-  place(x: number, z: number, heading: number) {
-    this.body.setTranslation({ x, y: rideHeight(this.spec) + 0.05, z }, true);
+  place(x: number, z: number, heading: number, ground = 0) {
+    this.body.setTranslation({ x, y: ground + rideHeight(this.spec) + 0.05, z }, true);
     this.body.setRotation({ x: 0, y: Math.sin(heading / 2), z: 0, w: Math.cos(heading / 2) }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);

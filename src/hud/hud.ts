@@ -1,3 +1,4 @@
+import { REGION } from '../world/landmarks.ts';
 import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from '../camera/director.ts';
 import type { Tile } from '../world/tile.ts';
 
@@ -43,7 +44,7 @@ export function drawTiles(tiles: Tile[], area: Rect, scale: number, ground: Rect
     g.fillStyle = colour;
     g.fill();
   };
-  for (const t of tiles) for (const a of t.areas) fill(a.outer, a.kind === 'water' ? '#3f6f8f' : '#35553a');
+  for (const t of tiles) for (const a of t.areas) fill(a.outer, a.kind === 'water' ? '#3f6f8f' : a.kind === 'sand' ? '#8a7a5a' : '#35553a');
   for (const t of tiles) for (const b of t.buildings) fill(b.outer, '#43474a');
   g.lineCap = g.lineJoin = 'round';
   // minor roads first, so the main roads read on top; never thinner than a pixel and a half
@@ -169,7 +170,7 @@ export class Hud {
 
   private region = $('region');
   setRegion(name: string) {
-    const text = name === 'Central Delhi' ? 'Central Delhi' : `${name} · Central Delhi`;
+    const text = name === REGION ? REGION : `${name} · ${REGION}`;
     if (this.region.textContent !== text) this.region.textContent = text;
   }
 

@@ -52,6 +52,8 @@ const PRESETS: Record<QualityName, Quality> = {
 };
 
 export const query = new URLSearchParams(location.search);
+/** Which city is driven: ?city=mumbai for South Bombay, Delhi otherwise. Each has its own map and its own save. */
+export const CITY: 'delhi' | 'mumbai' = query.get('city') === 'mumbai' ? 'mumbai' : 'delhi';
 
 const STORE_KEY = 'delhi-drive:quality';
 const isName = (q: string | null): q is QualityName => !!q && (QUALITY_NAMES as string[]).includes(q);

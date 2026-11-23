@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { CITY } from '../config.ts';
 import { mulberry32 } from '../util.ts';
 
 // Every surface texture is painted on a canvas at start-up. Phase 0 ships no image assets,
@@ -579,8 +580,13 @@ function supportsDevanagari() {
   return draw('क') !== draw('ख');
 }
 
-const SHOPS_EN = ['SHARMA SWEETS', 'DELHI SAREE HOUSE', 'MOBILE WORLD', 'GUPTA CHEMIST', 'CHAI POINT', 'BOOK DEPOT', 'ROYAL TAILORS', 'KHADI BHANDAR', 'JEWELLERS', 'PHOTO STUDIO', 'OPTICIANS', 'TRAVELS', 'ELECTRONICS', 'BAKERY', 'PAAN BHANDAR', 'DHABA'];
-const SHOPS_HI = ['शर्मा मिष्ठान भंडार', 'दिल्ली साड़ी हाउस', 'गुप्ता केमिस्ट', 'चाय', 'किताब घर', 'खादी भंडार', 'पान भंडार', 'ज्वैलर्स'];
+// Bombay's signboards are English and Marathi (in the same Devanagari script)
+const SHOPS_EN = CITY === 'mumbai'
+  ? ['VADA PAV CENTRE', 'IRANI CAFE', 'BOMBAY TAILORS', 'MUMBAI SAREE KENDRA', 'PATEL MEDICAL', 'CUTTING CHAI', 'SHREE GANESH STORES', 'UDUPI HOTEL', 'JEWELLERS', 'PHOTO STUDIO', 'OPTICIANS', 'TRAVELS', 'ELECTRONICS', 'BOMBAY BAKERY', 'PAAN HOUSE', 'MOBILE WORLD']
+  : ['SHARMA SWEETS', 'DELHI SAREE HOUSE', 'MOBILE WORLD', 'GUPTA CHEMIST', 'CHAI POINT', 'BOOK DEPOT', 'ROYAL TAILORS', 'KHADI BHANDAR', 'JEWELLERS', 'PHOTO STUDIO', 'OPTICIANS', 'TRAVELS', 'ELECTRONICS', 'BAKERY', 'PAAN BHANDAR', 'DHABA'];
+const SHOPS_HI = CITY === 'mumbai'
+  ? ['वडा पाव', 'मुंबई साडी केंद्र', 'गणेश स्टोअर्स', 'चहा', 'औषधालय', 'उपहारगृह', 'ज्वेलर्स', 'मिठाई']
+  : ['शर्मा मिष्ठान भंडार', 'दिल्ली साड़ी हाउस', 'गुप्ता केमिस्ट', 'चाय', 'किताब घर', 'खादी भंडार', 'पान भंडार', 'ज्वैलर्स'];
 const SIGN_COLOURS = ['#b3261e', '#1f4e8c', '#0f6b46', '#d08a12', '#5a2a7a', '#11110f', '#c2410c', '#0e7490', '#f2efe6'];
 
 /**

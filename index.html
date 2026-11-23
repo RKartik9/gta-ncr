@@ -3,22 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Delhi NCR · drive through Central Delhi in your browser</title>
+    <title>GTA NCR · drive through Central Delhi in your browser</title>
     <meta name="description" content="A free open-world driving game set in real Central Delhi: Connaught Place, India Gate and Lutyens' Delhi built from OpenStreetMap. Day and night, GPS waypoints, real car sounds and YouTube music. Plays in the browser, no install." />
     <meta name="theme-color" content="#16181a" />
     <link rel="canonical" href="https://gta-ncr-ro.vercel.app/" />
     <!-- link previews: WhatsApp, Facebook, LinkedIn, Slack, Discord, iMessage (Open Graph) and X (Twitter card) -->
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="Delhi NCR" />
+    <meta property="og:site_name" content="GTA NCR" />
     <meta property="og:url" content="https://gta-ncr-ro.vercel.app/" />
-    <meta property="og:title" content="Delhi NCR · drive through Central Delhi in your browser" />
+    <meta property="og:title" content="GTA NCR · drive through Central Delhi in your browser" />
     <meta property="og:description" content="Open-world driving in real Central Delhi: Connaught Place, India Gate and Lutyens' Delhi. Day and night, GPS, real car sounds and your own music. Free, no install." />
     <meta property="og:image" content="https://gta-ncr-ro.vercel.app/og.jpg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="A green Lamborghini driving down Kartavya Path towards India Gate" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Delhi NCR · drive through Central Delhi in your browser" />
+    <meta name="twitter:title" content="GTA NCR · drive through Central Delhi in your browser" />
     <meta name="twitter:description" content="Open-world driving in real Central Delhi: Connaught Place, India Gate and Lutyens' Delhi. Free, in your browser." />
     <meta name="twitter:image" content="https://gta-ncr-ro.vercel.app/og.jpg" />
     <meta name="twitter:image:alt" content="A green Lamborghini driving down Kartavya Path towards India Gate" />
@@ -168,8 +168,15 @@
       #loading .b i { animation-duration: 23s; animation-direction: alternate-reverse; }
       #loading .c i { animation-duration: 27s; }
       #loading .shade { position: absolute; inset: 0; background: linear-gradient(0deg, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.35) 30%, transparent 52%); }
-      #loading .next { position: absolute; right: 16px; top: 14px; padding: 7px 11px; background: #000; color: rgba(255, 255, 255, 0.8); font: 600 10.5px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.2em; text-transform: uppercase; }
-      #loading .next b { color: #ffb300; }
+      /* which city: two tabs over the start buttons; the one being driven is lit, the other is a link */
+      #loading .cities { display: none; margin: 0 0 18px; }
+      #loading.choosing .cities { display: flex; }
+      #loading .cities a { padding: 8px 16px 7px; border: 3px solid #000; background: rgba(0, 0, 0, 0.7); color: rgba(255, 255, 255, 0.75); font: 600 12px/1 ui-monospace, Menlo, monospace;
+        letter-spacing: 0.18em; text-transform: uppercase; text-decoration: none; transform: skewX(-7deg); }
+      #loading .cities a + a { border-left: 0; }
+      #loading .cities a small { display: block; margin-top: 4px; font-size: 9.5px; letter-spacing: 0.1em; opacity: 0.7; }
+      #loading .cities a.active { background: #ffb300; color: #000; }
+      #loading .cities a:not(.active):hover, #loading .cities a:not(.active):focus-visible { color: #fff; background: #000; outline: none; }
       #loading .title { position: absolute; left: clamp(18px, 4vw, 64px); bottom: clamp(18px, 5vh, 52px); }
       #loading h1 { margin: 0 0 0.16em; font: 400 clamp(64px, 13.5vw, 200px) / 0.84 Impact, Haettenschweiler, 'Arial Narrow Bold', 'Franklin Gothic Bold', sans-serif; text-transform: uppercase; color: #fff;
         transform: skewX(-7deg) rotate(-3deg); transform-origin: left bottom; -webkit-text-stroke: 0.04em #000; paint-order: stroke fill; text-shadow: 0.05em 0.05em 0 #000; }
@@ -220,7 +227,7 @@
     <div id="menu" aria-hidden="true">
       <div class="sheet panel" role="dialog" aria-label="Paused">
         <header class="menu-head">
-          <div><div class="eyebrow">Delhi NCR</div><h2>Paused</h2></div>
+          <div><div class="eyebrow" id="brand">GTA NCR</div><h2>Paused</h2></div>
           <button id="resume">Resume <kbd>Esc</kbd></button>
         </header>
         <div class="menu-body">
@@ -345,9 +352,12 @@
       <div class="panel b"><i style="background-image: url(loading/sian.jpg)"></i></div>
       <div class="panel c"><i style="background-image: url(loading/thar.jpg)"></i></div>
       <div class="shade"></div>
-      <div class="next">Next stop <b>Bombay</b> · on the way</div>
       <div class="title">
-        <h1>Delhi <span>NCR</span></h1>
+        <h1>GTA <span>NCR</span></h1>
+        <nav class="cities" aria-label="City">
+          <a href="?" data-city="delhi" class="active">Delhi<small>India Gate · CP</small></a>
+          <a href="?city=mumbai" data-city="mumbai">Bombay<small>Sea Link · Colaba</small></a>
+        </nav>
         <div class="start"><button class="primary" data-go="continue">Continue</button><button data-go="new">New game</button></div>
         <div class="track"><div id="loading-bar"></div></div>
         <p id="loading-text">Starting…</p>

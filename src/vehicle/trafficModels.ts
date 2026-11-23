@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CRETA, type CarSpec, HATCHBACK, THAR } from './cars.ts';
 import { carShape, plainWheel } from './carModel.ts';
+import { CITY } from '../config.ts';
 
 /** What the traffic needs to draw a vehicle: its body in one geometry with a group per material, and one wheel. */
 export interface TrafficShape {
@@ -129,6 +130,28 @@ const BUS: TrafficKind = {
   },
 };
 
-export const TRAFFIC_KINDS = [car(HATCHBACK), car(CRETA), car(THAR), AUTO, BUS];
-/** The mix on the road, by index into TRAFFIC_KINDS: three autos, three hatchbacks, two Cretas, a Thar and a bus in ten. */
-export const TRAFFIC_MIX = [3, 0, 1, 3, 0, 4, 3, 1, 2, 0];
+/** Bombay's kaali-peeli: a black taxi with a yellow roof. */
+const TAXI: TrafficKind = {
+  ...car(HATCHBACK), id: 'taxi', colours: [0x111111],
+  shape: () => {
+    const s = carShape(HATCHBACK);
+    s.shell.computeBoundingBox();
+    const { max, min } = s.shell.boundingBox!;
+    const roof = box((max.x - min.x) * 0.62, 0.05, (max.z - min.z) * 0.3, 0, max.y - 0.02, (max.z + min.z) / 2 - 0.15).toNonIndexed();
+    const count = s.shell.attributes.position.count;
+    const shell = mergeGeometries([s.shell, roof])!;
+    for (const g of s.shell.groups) shell.addGroup(g.start, g.count, g.materialIndex);
+    shell.addGroup(count, roof.attributes.position.count, s.materials.length);
+    return { ...s, shell, materials: [...s.materials, new THREE.MeshStandardMaterial({ color: 0xf2c014, roughness: 0.4, metalness: 0.2 })] };
+  },
+};
+
+const MUMBAI = CITY === 'mumbai';
+/** In Bombay the auto is black with a yellow hood, and the bus is a red BEST. */
+const auto: TrafficKind = MUMBAI ? { ...AUTO, id: 'auto-mumbai', colours: [0x121212] } : AUTO;
+const bus: TrafficKind = MUMBAI ? { ...BUS, id: 'best-bus', colours: [0xb3121b, 0xb3121b, 0xc22a1c] } : BUS;
+
+export const TRAFFIC_KINDS = [car(HATCHBACK), car(CRETA), car(THAR), auto, bus, TAXI];
+/** The mix on the road, by index into TRAFFIC_KINDS: in Delhi three autos, three hatchbacks, two Cretas, a Thar and a bus in ten;
+ * in Bombay four kaali-peelis, two autos, two cars, a Creta and a BEST bus. */
+export const TRAFFIC_MIX = MUMBAI ? [5, 0, 5, 3, 1, 5, 4, 5, 3, 0] : [3, 0, 1, 3, 0, 4, 3, 1, 2, 0];

@@ -6,20 +6,28 @@ import { type Budget, cached, hash01, ringArea } from '../util.ts';
 import { Instances, instanced } from '../render/instances.ts';
 import { onNight } from '../render/sky.ts';
 import { CLEARINGS } from './landmarks.ts';
+import { CITY } from '../config.ts';
 import { type Facade, colonialFacade, colonnadeTexture, glassFacade, lutyensFacade, officeFacade, plasterFacade, roofTexture, sandstoneFacade, shopfrontTexture } from '../render/textures.ts';
 
 type Style = 'colonial' | 'office' | 'glass' | 'plaster' | 'lutyens' | 'sandstone' | 'shed' | 'stone';
 
 // Lutyens' bungalow zone, between Rashtrapati Bhavan, India Gate and Khan Market, in map metres from CP (x east, z south).
 const LUTYENS = { x: -700, z: 2700, r: 2300 };
+// Bombay's Fort, Kala Ghoda, CST and Churchgate: Victorian Gothic in buff basalt, in Mumbai map metres.
+const FORT = { x: 850, z: 4950, r: 950 };
 
-// Wash colours of Delhi plaster walk-ups.
-const PLASTER_TINTS: [number, number, number][] = [
+// Wash colours of Delhi plaster walk-ups; in Bombay, sea air and monsoons leave everything greyed and streaked.
+const PLASTER_TINTS: [number, number, number][] = CITY === 'mumbai' ? [
+  [0.84, 0.82, 0.77], [0.9, 0.86, 0.78], [0.74, 0.75, 0.73], [0.93, 0.89, 0.81], [0.82, 0.8, 0.84], [0.78, 0.84, 0.82], [0.95, 0.93, 0.88], [0.68, 0.66, 0.62], [0.88, 0.8, 0.7],
+] : [
   [1, 0.97, 0.9], [0.98, 0.9, 0.78], [0.95, 0.84, 0.78], [0.86, 0.92, 0.94], [0.93, 0.93, 0.85], [0.99, 0.93, 0.7], [0.88, 0.95, 0.86], [0.9, 0.88, 0.86],
 ];
 
 /** Towers round Connaught Place that people know by sight: red sandstone for the LIC building, glass for Statesman House. */
-const KNOWN: Record<string, Style> = { 'Jeevan Bharti': 'sandstone', 'Statesman House': 'glass' };
+const KNOWN: Record<string, Style> = {
+  'Jeevan Bharti': 'sandstone', 'Statesman House': 'glass',
+  'The Taj Mahal Palace': 'sandstone', 'Taj Mahal Palace': 'sandstone', 'Taj Mahal Tower': 'sandstone',
+};
 
 /** Metres a Connaught Place colonnade stands out from its wall (tools/bake/bake.mjs leaves room for exactly this), and between its columns. */
 const ARCADE_DEPTH = 2.6, COLUMN_GAP = 3.6;
@@ -94,6 +102,13 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
     const h = hash01(b.id);
     // The white Georgian blocks ring the central park; everything inside the Outer Circle is one of them.
     if (Math.hypot(cx - plaza[0], cz - plaza[1]) < 380 && b.height <= 18) return 'colonial';
+    if (CITY === 'mumbai') {
+      // the Fort's courts, colleges, banks and stations are Gothic stone; everywhere else Bombay is towers and weathered blocks
+      if (Math.hypot(cx - FORT.x, cz - FORT.z) < FORT.r && (['government', 'public', 'civic', 'college', 'university', 'church', 'train_station', 'hospital', 'museum'].includes(b.kind) || (b.height >= 14 && b.height < 40 && h < 0.5))) return 'sandstone';
+      if (b.height >= 45) return h < 0.55 ? 'glass' : 'office';
+      if (['commercial', 'office', 'hotel'].includes(b.kind) && b.height >= 20) return h < 0.4 ? 'glass' : 'office';
+      return 'plaster';
+    }
     // New Delhi proper: sandstone government blocks and low white bungalows; its markets stay ordinary shop-houses
     if (Math.hypot(cx - LUTYENS.x, cz - LUTYENS.z) < LUTYENS.r && !['commercial', 'retail', 'apartments', 'hotel'].includes(b.kind)) {
       return b.height >= 16 || ['government', 'public', 'civic'].includes(b.kind) ? 'sandstone' : 'lutyens';
@@ -240,7 +255,7 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
     const k = 0.8 + h * 0.3;
     const roof = polygon(roofs, b.outer, b.holes, top, 9, k, k, k * 0.98);
 
-    // Black plastic water tanks on the roof: nothing says "Delhi skyline" faster.
+    // Black plastic water tanks on the roof: nothing says "Delhi skyline" faster. Bombay's are blue (and so are its monsoon tarps).
     if ((style === 'plaster' || style === 'office') && top < 32 && Math.abs(ringArea(b.outer)) > 70) {
       const count = 1 + Math.floor(hash01(b.id * 13) * 2.4);
       for (let t = 0; t < count && t < roof.tris.length; t++) {
@@ -286,7 +301,7 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
 
   const tankGeo = cached('g-tank', () => new THREE.CylinderGeometry(0.62, 0.66, 1.5, 12).translate(0, 0.95, 0));
   for (const [chunk, list] of chunks.bucket(tanks, (m) => [m.elements[12], m.elements[14]])) {
-    const mesh = new Instances(tankGeo, cached('m-tank', () => instanced(new THREE.MeshStandardNodeMaterial({ color: 0x141416, roughness: 0.45 }))), list);
+    const mesh = new Instances(tankGeo, cached('m-tank', () => instanced(new THREE.MeshStandardNodeMaterial({ color: CITY === 'mumbai' ? 0x2357a8 : 0x141416, roughness: 0.45 }))), list);
     mesh.name = 'water-tanks';
     mesh.castShadow = true;
     chunk.near.add(mesh);

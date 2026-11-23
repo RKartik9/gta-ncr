@@ -105,7 +105,7 @@ export class Streamer {
     budget.restart();
     const chunks = new Chunks();
     chunks.group.name = `cell-${key}`;
-    await buildGround(tile, chunks, budget);
+    const flyovers = await buildGround(tile, chunks, budget);
     const city = await buildBuildings(tile, this.grid.plaza, chunks, budget);
     // A road belongs to the cell its middle is in, but runs on through others: the scenery is kept off (and
     // planted along) every road that crosses this cell, not just the ones it owns.
@@ -114,6 +114,7 @@ export class Streamer {
     const props = await buildProps({ ...tile, roads: near }, this.grid.plaza, this.treeDensity, chunks, budget);
     // the solid world goes in a piece at a time as well: one cell is thousands of bodies
     const physics: Cell['physics'] = [];
+    physics.push(addProps(this.world, flyovers.piers, [], flyovers.parapets, flyovers.deck));
     for (const walls of city.colliders) {
       if (budget.due) await budget.wait();
       physics.push(addProps(this.world, [], [], walls));

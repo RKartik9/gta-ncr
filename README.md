@@ -15,6 +15,7 @@
 ## What's in it
 
 - **The real city.** Roads, buildings, parks and trees of Delhi come from OpenStreetMap. Connaught Place's white Georgian colonnades, the red sandstone ministries, India Gate and the 63 m flag over Central Park are all built in.
+- **And South Bombay.** A second map, from Bandra over the Bandra–Worli Sea Link, down the Coastal Road and Marine Drive to the Fort, the Gateway of India, the Taj and Colaba, with the Arabian Sea round it. Pick it on the title screen, or open `?city=mumbai`.
 - **Day and night.** A full day passes in 24 minutes, or jump to night with N. After dark the sodium street lamps, shop signs and office windows come on, headlights switch on by themselves, and the cabin glows.
 - **Four cars and a bike.** A Lamborghini Sián FKP 37, a Mercedes-AMG G 63, a Mahindra Thar, a Hyundai Creta and a KTM 390 Duke, each with someone at the wheel (or on the saddle), on real suspension (Rapier physics) and tyres that slip: wheels spin and lock, the anti-lock brakes pulse, weight shifts under braking, the handbrake swings the tail out, accelerate and brake together powerslide it, and the tall G 63 leans and can go over. Switch with V.
 - **Six cameras.** Chase, hood, cockpit, top-down, cinematic and a free drone. Drag to look around and use the wheel to zoom.
@@ -64,6 +65,7 @@ npm run dev:https    # https on your network, so a phone or another PC can use a
 | `?car=g63` | start in the G 63 (also `thar`, `creta`, `ktm-390-duke`) |
 | `?cam=cockpit` | start in a camera view |
 | `?x=…&z=…&h=…` | start anywhere on the map (metres from Connaught Place, heading in degrees) |
+| `?city=mumbai` | drive South Bombay instead of Delhi (each city keeps its own save) |
 | `?fresh` | ignore saved progress |
 | `?gl` | force WebGL 2 instead of WebGPU |
 
@@ -73,7 +75,7 @@ npm run dev:https    # https on your network, so a phone or another PC can use a
 - **[Rapier](https://rapier.rs/)** for physics: sprung ray-cast wheels with the game's own tyre model on top (`src/vehicle/vehicle.ts`), building walls as triangle meshes, and street furniture that sleeps until hit.
 - **Only the vicinity is drawn.** Each 1 km map cell is cut into 200 m chunks; chunks beyond the preset's draw distance are taken out of the scene and haze hides the edge. The pause menu's Graphics tab shows which graphics card the browser is using.
 - **TypeScript + [Vite](https://vite.dev/)**, with no UI framework.
-- **The map** is baked from OpenStreetMap (Overpass) by `tools/bake/bake.mjs` into 1 km cells under `public/tiles/`. Cells load and unload around the car as you drive; the GPS and the big map use `overview.json`, every road and park in one file.
+- **The map** is baked from OpenStreetMap (Overpass) by `tools/bake/bake.mjs` into 1 km cells under `public/tiles/`. South Bombay (`--area mumbai`) is cut from Geofabrik's India extract instead, with [osmium-tool](https://osmcode.org/osmium-tool/): `node tools/bake/bake.mjs --area mumbai --pbf india-latest.osm.pbf`. Its sea is built from the OpenStreetMap coastline. Cells load and unload around the car as you drive; the GPS and the big map use `overview.json`, every road and park in one file.
 - **Sound** uses the Web Audio API. Recorded loops are pitched and filtered live, and music plays through the YouTube IFrame Player API.
 
 ```

@@ -1,7 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Tile } from './tile.ts';
-import { isMajor, isStreet } from './ground.ts';
+import { hasPavement, isMajor, isStreet } from './ground.ts';
+import { CITY } from '../config.ts';
 import type { Chunks } from './chunks.ts';
 import { type Budget, cached, mulberry32, pointInRing, ringArea } from '../util.ts';
 import { Instances, instanced } from '../render/instances.ts';
@@ -154,9 +155,10 @@ async function placeTrees(tile: Tile, density: number, budget: Budget): Promise<
 
   // Avenue trees: Lutyens' Delhi is planted road by road, a single species per avenue.
   for (const r of tile.roads) {
-    if (!isStreet(r)) continue;
+    if (!hasPavement(r)) continue;
     if (budget.due) await budget.wait();
-    const tall = isMajor(r) && rnd() < 0.2;
+    // Bombay's main roads and sea fronts are lined with coconut palms
+    const tall = isMajor(r) && rnd() < (CITY === 'mumbai' ? 0.55 : 0.2);
     const spacing = (isMajor(r) ? 12 : 17) / density;
     let carry = rnd() * spacing;
     for (let i = 0; i + 3 < r.pts.length; i += 2) {
@@ -195,7 +197,7 @@ async function placeTrees(tile: Tile, density: number, budget: Budget): Promise<
       const x = minX + rnd() * (maxX - minX), z = minZ + rnd() * (maxZ - minZ);
       if (!pointInRing(x, z, a.outer)) continue;
       if (open && edgeDistance(x, z, a.outer) > 14) continue;
-      tryAdd(x, z, rnd() < 0.15);
+      tryAdd(x, z, rnd() < (CITY === 'mumbai' ? 0.35 : 0.15));
       i++;
     }
   }
@@ -214,8 +216,11 @@ function buildTrees(spots: TreeSpot[], chunks: Chunks) {
   const kinds = cached('tree-kinds', () => [
     // neem and peepal: a broad, irregular crown
     { tall: false, ...crown(1, [[0, 6.4, 0, 3.1, 0.8], [2.1, 5.5, 0.6, 2.2, 0.8], [-1.9, 5.7, -0.9, 2.3, 0.8], [0.3, 5.3, -2, 2, 0.75], [-0.4, 7.6, 0.7, 2, 0.8]], 90), trunk: new THREE.CylinderGeometry(0.22, 0.34, 5, 7).translate(0, 2.5, 0), colour: [0.33, 0.47, 0.2] },
-    // ashoka: the tall narrow column seen along boundary walls
-    { tall: true, ...crown(2, [[0, 4.2, 0, 1.5, 1.5], [0, 7, 0, 1.3, 1.6], [0, 9.6, 0, 0.9, 1.6]], 50), trunk: new THREE.CylinderGeometry(0.14, 0.2, 3, 6).translate(0, 1.5, 0), colour: [0.2, 0.36, 0.16] },
+    CITY === 'mumbai'
+      // coconut palm: a bare ringed trunk and a flat star of fronds on top
+      ? { tall: true, ...crown(3, [[0, 9.7, 0, 1.2, 0.6], [1.9, 9.3, 0, 1.6, 0.28], [-1.9, 9.3, 0, 1.6, 0.28], [0, 9.3, 1.9, 1.6, 0.28], [0, 9.3, -1.9, 1.6, 0.28]], 70), trunk: new THREE.CylinderGeometry(0.13, 0.2, 9.6, 6).translate(0, 4.8, 0), colour: [0.3, 0.45, 0.16] }
+      // ashoka: the tall narrow column seen along boundary walls
+      : { tall: true, ...crown(2, [[0, 4.2, 0, 1.5, 1.5], [0, 7, 0, 1.3, 1.6], [0, 9.6, 0, 0.9, 1.6]], 50), trunk: new THREE.CylinderGeometry(0.14, 0.2, 3, 6).translate(0, 1.5, 0), colour: [0.2, 0.36, 0.16] },
   ]);
   const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), c = new THREE.Color();
   for (const [chunk, here] of chunks.bucket(spots, (s) => [s.x, s.z])) for (const kind of kinds) {
@@ -307,7 +312,7 @@ function buildLamps(tile: Tile, onRoad: ReturnType<typeof roadIndex>, chunks: Ch
   const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
   for (const r of tile.roads) {
     // main roads every 34 m, alternating sides; ordinary streets every 45 m, so no street is left dark
-    if (!isStreet(r) || r.kind === 'path') continue;
+    if (!isStreet(r) || r.kind === 'path' || r.elev) continue;
     const every = isMajor(r) ? 34 : 45;
     let carry = 9, side = 1;
     for (let i = 0; i + 3 < r.pts.length; i += 2) {
@@ -675,8 +680,8 @@ function buildLoose(tile: Tile, onRoad: (x: number, z: number, margin: number) =
     }
   };
   for (const r of tile.roads) {
-    if (isMajor(r)) along(r, 140, (side) => (r.width / 2 - 0.5) * side, barricades, 0.55, 0.7, -0.7);
-    if (isStreet(r)) along(r, 60, (side) => (r.width / 2 + 0.8) * side, bins, 0.5, 0.8, 0.3);
+    if (isMajor(r) && hasPavement(r)) along(r, 140, (side) => (r.width / 2 - 0.5) * side, barricades, 0.55, 0.7, -0.7);
+    if (hasPavement(r)) along(r, 60, (side) => (r.width / 2 + 0.8) * side, bins, 0.5, 0.8, 0.3);
   }
 
   const bollards = (tile.bollards ?? []).reduce<THREE.Matrix4[]>((out, _v, i, a) => {
