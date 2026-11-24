@@ -3,6 +3,7 @@ import { CITY, QUALITY_NAMES, type QualityName, detectGpu, pickQuality, query, s
 import { type Progress, clearProgress, loadProgress, saveProgress } from './save.ts';
 import { backendName, createPipeline, createRenderer, resolutionGovernor, setupShadows } from './render/renderer.ts';
 import { DayNight, onNight } from './render/sky.ts';
+import { TyreFx } from './render/tyreFx.ts';
 import { setAnisotropy } from './render/textures.ts';
 import { type Grid, type Tile, deckHeight, loadJson, nearestRoad, offRoadInWater } from './world/tile.ts';
 import { RoadGraph } from './world/route.ts';
@@ -90,6 +91,7 @@ async function boot() {
   const lampLights = new LampLights(scene, [], quality.lampLights);
   // in the scene from the start, so its shaders are built behind the loading screen
   const traffic = new Traffic(scene, world, quality.traffic, quality.drawDistance);
+  const tyreFx = new TyreFx(scene, quality.name === 'low' ? 80 : 160);
   // Bombay's pavements are far busier than Delhi's
   const pedestrians = new Pedestrians(scene, world, Math.round(quality.pedestrians * (CITY === 'mumbai' ? 1.8 : 1)));
   const streamer = new Streamer(grid, area, all.roads, scene, world, quality.treeDensity, quality.drawDistance, quality.detailDistance);
@@ -161,6 +163,7 @@ async function boot() {
     carIndex = next;
     model = incoming;
     vehicle = new Vehicle(world, model.spec, p.x, p.z, heading, ground);
+    tyreFx.reset();
     scene.add(model.group);
     carLamps.attach(model);
     readPose(current);
@@ -200,6 +203,7 @@ async function boot() {
     // keep the way the car was facing rather than snapping it round to the way the road was drawn
     const along = Math.cos(hit.heading - vehicle.heading) >= 0 ? hit.heading : hit.heading + Math.PI;
     vehicle.place(hit.x, hit.z, along);
+    tyreFx.reset();
     readPose(current);
     previous.p.copy(current.p);
     previous.q.copy(current.q);
@@ -472,6 +476,7 @@ async function boot() {
       // the sea is not a road: a car that runs off the land (or off the Sea Link) is stopped at the water's edge
       if (offRoadInWater(streamer.tiles, current.p.x, current.p.z)) {
         vehicle.place(dry.x, dry.y, vehicle.heading, deckHeight(streamer.tiles, dry.x, dry.y));
+        tyreFx.reset();
         readPose(current);
         previous.p.copy(current.p);
       } else dry.set(current.p.x, current.p.z);
@@ -490,6 +495,7 @@ async function boot() {
     // tyres at their limit come through the controller as a light buzz, the anti-lock as a harder one
     if (steps && (vehicle.skid > 0.2 || vehicle.abs)) keys.rumble(Math.max(vehicle.skid * 0.35, vehicle.abs ? 0.3 : 0), 60);
     sound.update(dt, vehicle.speed, vehicle.wheelSpeed, input.throttle, vehicle.skid);
+    tyreFx.update(paused ? 0 : dt, vehicle, !!model.lean);
     streamer.sync();
     {
       // the people on the pavement: a car that runs one down feels it
@@ -517,7 +523,9 @@ async function boot() {
     });
     if (model.lean) {
       // a bike is leant into the corner by as much as would balance it
-      const into = THREE.MathUtils.clamp(-Math.atan((vehicle.speed * vehicle.body.angvel().y) / 9.81), -0.8, 0.8);
+      // and laid over into a donut, where it is turning fast but hardly moving
+      const turning = vehicle.body.angvel().y, sliding = Math.max(vehicle.wheelSlide[2], vehicle.wheelSlide[3]);
+      const into = THREE.MathUtils.clamp(-Math.atan((vehicle.speed * turning) / 9.81) - THREE.MathUtils.clamp(turning * 0.18, -0.5, 0.5) * sliding, -0.8, 0.8);
       model.lean.rotation.z += (into - model.lean.rotation.z) * Math.min(1, dt * 6);
     }
     if (model.rider) model.rider.visible = director.mode !== 'cockpit';

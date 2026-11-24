@@ -44,13 +44,21 @@ const BRAKE_ASSIST = 0.6;
 /** m/s at which the steering lock has come halfway down to its high-speed limit. Raise to keep more lock at speed. */
 const LOCK_FADE = 20;
 /** Share of their sideways grip the rear tyres keep in a power slide (accelerate and brake held together). Lower slides more. */
-const DRIFT_GRIP = 0.55;
+const DRIFT_GRIP = 0.45;
 /** Slide angle (radians) past which the rear tyres get their grip back, so a drift holds an angle rather than spinning. */
-const DRIFT_ANGLE = 0.5;
-/** Touch of brake held through a power slide: it throws weight onto the nose and lightens the tail. */
-const DRIFT_BRAKE = 0.05;
+const DRIFT_ANGLE = 0.9;
 /** How hard the car is turned back in line with where it is going after a slide (rad/s of turn per radian of slide). */
 const DRIFT_RECOVERY = 3;
+/** In a power slide the engine pushes the rear tyres with this many times what they can grip with, whatever the car: they spin. */
+const DRIFT_SPIN = 1.6;
+/** m/s the spinning rear tyres are let run faster than the road: standing still, and at speed, where more would leave no grip to hold the slide with. */
+const DRIFT_OVERSPEED = 16, DRIFT_OVERSPEED_FAST = 12;
+/** m/s by which the front brakes have let go: under it both pedals hold the nose while the tail smokes (a burnout) or swings round it (a donut). */
+const DRIFT_LOCK_FADE = 8;
+/** g with which the front brakes hold the car still in a burnout. */
+const DRIFT_HOLD = 1.6;
+/** rad/s a donut turns at, and the most the car is let turn in any power slide. */
+const DRIFT_TURN = 2.8, DRIFT_TURN_MAX = 3.5;
 
 /** Grip against slip, both as a share of their peak: rises to 1 at 1, then eases down to SLIDE. */
 const tyreCurve = (s: number) => (s < 1 ? s * (2 - s) : SLIDE + (1 - SLIDE) / (1 + ((s - 1) / 2) ** 2));
@@ -85,6 +93,10 @@ export class Vehicle {
   wheelSpeed = 0;
   /** angle between where the nose points and where the car is going, radians, positive when it slides to its left */
   drift = 0;
+  /** how hard each tyre is sliding over the road, 0 to 1: for the smoke and the marks it leaves */
+  readonly wheelSlide = [0, 0, 0, 0];
+  /** where each tyre stands on the road, or null for one in the air */
+  readonly wheelContact: (Vec | null)[] = [null, null, null, null];
   private spin = [0, 0, 0, 0];
   /** how far each tyre is off its heading, as a share of the angle where it grips hardest; from the last step */
   private slip = [0, 0, 0, 0];
@@ -172,9 +184,11 @@ export class Vehicle {
     this.body.setRotation({ x: 0, y: Math.sin(heading / 2), z: 0, w: Math.cos(heading / 2) }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    this.steer = this.gas = this.brake = this.skid = this.drift = this.wheelSpeed = this.cut = 0;
+    this.steer = this.gas = this.brake = this.skid = this.drift = this.wheelSpeed = this.cut = this.driftHold = this.recover = 0;
     this.loose = false;
     this.slip.fill(0);
+    this.wheelSlide.fill(0);
+    this.wheelContact.fill(null);
     this.spin.fill(0);
   }
 
@@ -202,9 +216,11 @@ export class Vehicle {
 
     // Pedals. The same control brakes when the car is rolling the other way, and drives once it has stopped.
     let gas = 0, brake = 0;
-    if (input.drift && v > -0.8) {
-      // power slide: throttle on, a dab of brake, and the stability control stood back (below)
-      [gas, brake, this.reverse] = [Math.max(input.throttle, 0.6), DRIFT_BRAKE, false];
+    // (a car rolling backwards is braked first; one already sliding that has swung right round stays in the slide)
+    const drifting = !!input.drift && (v > -0.8 || this.driftHold > 0.5);
+    if (drifting) {
+      // power slide: throttle on, the front brakes holding the nose at low speed, and the stability control stood back (below)
+      [gas, this.reverse] = [Math.max(input.throttle, 0.6), false];
     } else if (input.throttle > 0) {
       if (v < -0.8) brake = input.throttle;
       else [gas, this.reverse] = [input.throttle, false];
@@ -225,15 +241,22 @@ export class Vehicle {
     this.drift = Math.hypot(v, sideways) > 4 && !(this.reverse && v < 0) ? Math.atan2(sideways, v) : 0;
     const sliding = clamp((Math.abs(this.drift) - 0.05) / 0.12, 0, 1);
     // let go of the pedals and the rear tyres bite again at once, and the stability control is back to catch it
-    this.driftHold = approach(this.driftHold, input.drift && Math.abs(v) > 3 ? 1 : 0, (input.drift ? 4 : 8) * dt);
+    this.driftHold = approach(this.driftHold, drifting ? 1 : 0, (drifting ? 4 : 8) * dt);
+    const hold = this.driftHold, pace = Math.hypot(v, sideways);
+    // 1 standing still, 0 once the car is under way: how far the front brakes are on in a power slide
+    const slow = hold * clamp(1 - pace / DRIFT_LOCK_FADE, 0, 1);
+    // 0 at donut speeds, where the car may turn right round; 1 at speed, where the slide is held to DRIFT_ANGLE
+    const fast = clamp((pace - 6) / 6, 0, 1);
+    const beyond = fast * (Math.abs(this.drift) - DRIFT_ANGLE);
     if (input.handbrake) this.loose = true;
     else if (Math.abs(this.drift) < 0.05) this.loose = false;
     // At speed the lock comes down to just past the angle where the tyres grip hardest: any more only scrubs them.
+    // A power slide has all of it, and less of the wheels running to where the car is going: the driver decides.
     const least = Math.atan(PEAK_ANGLE) * 1.2;
-    const lock = least + (c.maxSteer - least) / (1 + (Math.abs(v) / LOCK_FADE) ** 1.6);
-    const target = clamp(input.steer * lock + this.drift * 0.8 * sliding, -c.maxSteer, c.maxSteer);
+    const lock = least + (c.maxSteer - least) * (hold + (1 - hold) / (1 + (Math.abs(v) / LOCK_FADE) ** 1.6));
+    const target = clamp(input.steer * lock + this.drift * (0.8 - 0.4 * hold * (1 - fast)) * sliding, -c.maxSteer, c.maxSteer);
     // and it goes on more gently, but comes back to catch a slide as fast as ever
-    const rate = (input.steer === 0 || sliding > 0 ? 3.2 : 2.2 / (1 + Math.abs(v) / 30)) * dt;
+    const rate = (input.steer === 0 || sliding > 0 || hold > 0 ? 3.2 : 2.2 / (1 + Math.abs(v) / 30)) * dt;
     this.steer += clamp(target - this.steer, -rate, rate);
 
     for (let n = 0; n < 4; n++) ctl.setWheelSteering(n, n < 2 ? this.steer : 0);
@@ -263,7 +286,9 @@ export class Vehicle {
     // Engine: full push from rest, tailing off to nothing at top speed. It follows the wheels, so it also
     // tails off when they spin. The air's own drag is added back so the two together still reach top speed.
     const R = c.wheelRadius;
-    const axleShare = (n: number) => (n < 2 ? c.driveFront : 1 - c.driveFront);
+    // a power slide is driven from the back, whatever the car
+    const driveFront = c.driveFront * (1 - hold);
+    const axleShare = (n: number) => (n < 2 ? driveFront : 1 - driveFront);
     const tread = Math.abs(this.wheelSpeed);
     const top = this.reverse ? c.reverseSpeed : c.topSpeed;
     // Stability control, as both real cars have: when the rear tyres are past the angle they grip at (the tail is
@@ -273,8 +298,13 @@ export class Vehicle {
     const over = Math.max(Math.abs(this.slip[2]), Math.abs(this.slip[3])) - 1, wide = Math.max(Math.abs(this.slip[0]), Math.abs(this.slip[1])) - 1.6;
     this.cut = approach(this.cut, this.loose || input.drift ? 0 : clamp(Math.max(over, wide) / 0.6, 0, 1), 8 * dt);
     // past the drift angle the throttle is feathered, as a driver would, or a rear-drive car powers round into a spin
-    const feather = 1 - this.driftHold * clamp((Math.abs(this.drift) - DRIFT_ANGLE) / 0.3, 0, 0.85);
-    const push = tread < top ? feather * (1 - this.cut) * this.gas * ((this.reverse ? c.reverseForce : c.engineForce) * (1 - (tread / top) ** 2) + c.drag * tread * tread) : 0;
+    const feather = 1 - hold * clamp(beyond / 0.3, 0, 0.85);
+    // and in a power slide there is always enough to spin the rear tyres, up to so much faster than the road
+    const overspeed = DRIFT_OVERSPEED + (DRIFT_OVERSPEED_FAST - DRIFT_OVERSPEED) * fast;
+    const rearTread = ((this.spin[2] + this.spin[3]) / 2) * c.wheelRadius;
+    const engine = (this.reverse ? c.reverseForce : c.engineForce) * (1 - (tread / top) ** 2) + c.drag * tread * tread;
+    const wheelspin = Math.max(engine, DRIFT_SPIN * c.gripRear * (load[2] + load[3]) * (1 - (tread / top) ** 2)) * clamp((Math.abs(v) + overspeed - rearTread) / 3, 0, 1);
+    const push = tread < top ? feather * (1 - this.cut) * this.gas * (engine + (wheelspin - engine) * hold) : 0;
 
     // Differentials. Left to itself a driven wheel with no weight on it (the inside one in a hard corner) just
     // spins up and wastes the engine; a limited-slip differential drags it back towards its partner's speed,
@@ -285,7 +315,7 @@ export class Vehicle {
       if (!axleShare(n)) return 0;
       const across = LIMITED_SLIP * (start[n ^ 1] - start[n]);
       // the handbrake lets the centre one go, as a rally car's does, or locking the rear wheels would brake the front
-      const along = c.driveFront > 0 && c.driveFront < 1 && !input.handbrake ? LIMITED_SLIP * ((n < 2 ? rear2 : front2) - (n < 2 ? front2 : rear2)) : 0;
+      const along = c.driveFront > 0 && c.driveFront < 1 && !input.handbrake ? (1 - hold) * LIMITED_SLIP * ((n < 2 ? rear2 : front2) - (n < 2 ? front2 : rear2)) : 0;
       return across + along;
     };
 
@@ -300,7 +330,8 @@ export class Vehicle {
       // always there: rolling resistance, and off the throttle the engine holding its wheels back
       const dragTorque = c.mass * R * (0.03 + (1 - this.gas) * 0.5 * share);
       const pedalTorque = this.brake * c.mass * c.brakeDecel * R * (front ? c.brakeFront : 1 - c.brakeFront) / 2;
-      const handTorque = held ? c.mass * 12 * R : 0;
+      // the handbrake on the rear wheels; in a power slide at low speed the brake on the front ones, eased as the wheel is turned
+      const handTorque = held ? c.mass * 12 * R : front ? slow * (1 - 0.8 * Math.abs(input.steer)) * c.mass * c.brakeDecel * R / 2 : 0;
       let w = this.spin[n];
 
       const N = load[n];
@@ -312,6 +343,8 @@ export class Vehicle {
         w = Math.abs(w) <= stop ? 0 : w - Math.sign(w) * stop;
         this.spin[n] = w;
         this.slip[n] = 0;
+        this.wheelSlide[n] = 0;
+        this.wheelContact[n] = null;
         this.wheelAngle[n] += w * dt;
         treadSum += w * R * share;
         continue;
@@ -333,7 +366,7 @@ export class Vehicle {
       const mu = (front ? c.gripFront : c.gripRear) * clamp(1 - 0.12 * (N / ((c.mass * G) / 4) - 1), 0.75, 1.1);
       // in a power slide the rear tyres grip less sideways, but still drive and brake along
       // and get it back as the slide passes DRIFT_ANGLE, so the drift holds instead of spinning the car round
-      const holding = this.driftHold * clamp(1 - (Math.abs(this.drift) - DRIFT_ANGLE) / 0.25, 0, 1);
+      const holding = hold * clamp(1 - beyond / 0.25, 0, 1);
       const muSide = front ? mu : mu * (1 - (1 - DRIFT_GRIP) * holding);
       const ref = Math.max(Math.abs(vLong), CRAWL);
       const sy = vLat / ref / PEAK_ANGLE;
@@ -382,7 +415,9 @@ export class Vehicle {
       pushes.push([{ x: (fwd.x * fx + side.x * fy) * dt, y: (fwd.y * fx + side.y * fy) * dt, z: (fwd.z * fx + side.z * fy) * dt }, point]);
 
       const scrub = Math.hypot(w * R - vLong, vLat);
-      skid = Math.max(skid, clamp((slide - 1.3) / 2.5, 0, 1) * clamp(scrub / 3, 0, 1) * clamp(N / ((c.mass * G) / 8), 0, 1));
+      this.wheelSlide[n] = clamp((slide - 1.3) / 2.5, 0, 1) * clamp(scrub / 3, 0, 1) * clamp(N / ((c.mass * G) / 8), 0, 1);
+      this.wheelContact[n] = point;
+      skid = Math.max(skid, this.wheelSlide[n]);
     }
     this.wheelSpeed = treadSum;
     this.skid = skid;
@@ -393,7 +428,10 @@ export class Vehicle {
     // never more than would stop it in this step.
     const air = Math.hypot(vel.x, vel.y, vel.z);
     const down = weight > 0 ? c.downforce * v * v : 0;
-    const assist = air > 0.1 ? Math.min(this.brake * BRAKE_ASSIST * G * clamp(weight / (c.mass * G), 0, 1) * dt, air) / air : 0;
+    // In a burnout the front brakes hold the whole car the same way, and let it go as the wheel is turned for a donut.
+    // Only a car that is all but standing: one coming down out of a slide drives on.
+    const stand = hold * clamp(1 - air / 3, 0, 1) * (1 - Math.abs(input.steer)) * DRIFT_HOLD;
+    const assist = air > 1e-4 && (stand > 0 || air > 0.1) ? Math.min((this.brake * BRAKE_ASSIST + stand) * G * clamp(weight / (c.mass * G), 0, 1) * dt, air) / air : 0;
     body.applyImpulse({
       x: (-vel.x * (c.drag * air + c.mass * assist / dt) - up.x * down) * dt,
       y: (-vel.y * (c.drag * air + c.mass * assist / dt) - up.y * down) * dt,
@@ -407,6 +445,15 @@ export class Vehicle {
       const av = body.angvel();
       const want = clamp(this.drift * DRIFT_RECOVERY, -2.5, 2.5);
       body.setAngvel({ x: av.x, y: av.y + (want - av.y) * Math.min(1, 4 * dt), z: av.z }, true);
+    }
+    // In one, the car is helped round as in an arcade game: at donut speeds it is turned the way the wheel is held,
+    // at speed a slide past DRIFT_ANGLE is eased back to it, and it never turns faster than can be followed.
+    if (hold > 0 && weight > 0) {
+      const av = body.angvel();
+      let y = av.y + (input.steer * DRIFT_TURN - av.y) * Math.min(1, 8 * dt) * slow * Math.abs(input.steer);
+      if (beyond > 0) y += (clamp(Math.sign(this.drift) * beyond * DRIFT_RECOVERY, -2.5, 2.5) - y) * Math.min(1, 6 * dt) * hold * clamp(beyond / 0.2, 0, 1);
+      const most = DRIFT_TURN_MAX + (1 - hold) * 10;
+      body.setAngvel({ x: av.x, y: clamp(y, -most, most), z: av.z }, true);
     }
   }
 

@@ -17,7 +17,7 @@
 - **The real city.** Roads, buildings, parks and trees of Delhi come from OpenStreetMap. Connaught Place's white Georgian colonnades, the red sandstone ministries, India Gate and the 63 m flag over Central Park are all built in.
 - **And South Bombay.** A second map, from Bandra over the Bandra–Worli Sea Link, down the Coastal Road and Marine Drive to the Fort, the Gateway of India, the Taj and Colaba, with the Arabian Sea round it. Pick it on the title screen, or open `?city=mumbai`.
 - **Day and night.** A full day passes in 24 minutes, or jump to night with N. After dark the sodium street lamps, shop signs and office windows come on, headlights switch on by themselves, and the cabin glows.
-- **Four cars and a bike.** A Lamborghini Sián FKP 37, a Mercedes-AMG G 63, a Mahindra Thar, a Hyundai Creta and a KTM 390 Duke, each with someone at the wheel (or on the saddle), on real suspension (Rapier physics) and tyres that slip: wheels spin and lock, the anti-lock brakes pulse, weight shifts under braking, the handbrake swings the tail out, accelerate and brake together powerslide it, and the tall G 63 leans and can go over. Switch with V.
+- **Four cars and a bike.** A Lamborghini Sián FKP 37, a Mercedes-AMG G 63, a Mahindra Thar, a Hyundai Creta and a KTM 390 Duke, each with someone at the wheel (or on the saddle), on real suspension (Rapier physics) and tyres that slip: wheels spin and lock, the anti-lock brakes pulse, weight shifts under braking, the handbrake swings the tail out, accelerate and brake together smoke the rear tyres where it stands, spin it in donuts or drift it at speed, leaving smoke and rubber on the road, and the tall G 63 leans and can go over. Switch with V.
 - **Six cameras.** Chase, hood, cockpit, top-down, cinematic and a free drone. Drag to look around and use the wheel to zoom.
 - **GPS.** Open the map (M), click anywhere or pick a landmark, and follow the purple route along the roads. One-way streets are respected.
 - **Sound.** Recorded engine, tyre squeal, crashes and horn. Paste any YouTube video or playlist link into the menu to drive to your own music.
@@ -30,7 +30,7 @@
 | Keyboard & mouse | | Controller | |
 |---|---|---|---|
 | <kbd>W A S D</kbd> / arrows | drive and steer | <kbd>RT</kbd> · <kbd>LT</kbd> | accelerate · brake and reverse |
-| <kbd>W</kbd> + <kbd>S</kbd> (hold, steer) | drift | <kbd>RT</kbd> + <kbd>LT</kbd> (hold, steer) | drift |
+| <kbd>W</kbd> + <kbd>S</kbd> (hold, steer) | burnout, donuts, drift | <kbd>RT</kbd> + <kbd>LT</kbd> (hold, steer) | burnout, donuts, drift |
 | <kbd>Space</kbd> | handbrake | Left stick / d-pad | steer |
 | <kbd>H</kbd> (hold) | horn | Right stick | look around |
 | <kbd>L</kbd> | headlights | <kbd>A</kbd> ✕ | handbrake |
