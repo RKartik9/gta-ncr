@@ -570,7 +570,7 @@ async function boot() {
     }
 
     pipeline.render();
-    governor(dt);
+    governor(dt, performance.now() - began);
 
     if (firstFrame) {
       firstFrame = false;

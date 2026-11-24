@@ -21,30 +21,34 @@ export async function createRenderer(canvas: HTMLCanvasElement, quality: Quality
 }
 
 /**
- * Keeps the frame rate up on any machine by trading sharpness for speed: when frames run slow the picture is
- * rendered at a lower resolution, and it creeps back up when there is headroom. Call once a frame.
+ * Keeps the frame rate up on a slow graphics card by trading sharpness for speed: when the card cannot keep up the
+ * picture is rendered at a lower resolution, and it goes back up when there is headroom. Call once a frame with
+ * the seconds since the last one and the milliseconds this page's own code took.
+ * Every change of resolution rebuilds every render target (MSAA, bloom, shadows), which flashes the screen and
+ * stalls a frame: so it changes rarely, in big steps, never above the preset, and never when the processor is
+ * what is slow (a smaller picture does nothing for that but blur it).
  */
 export function resolutionGovernor(renderer: THREE.WebGPURenderer, quality: Quality) {
-  const top = Math.min(window.devicePixelRatio, quality.maxPixelRatio);
+  const top = Math.min(window.devicePixelRatio, quality.pixelRatio);
   const floor = Math.min(top, quality.minPixelRatio);
   let ratio = renderer.getPixelRatio();
-  let avg = 1 / 60, timer = 0, holdUp = 0;
-  return (dt: number) => {
+  let avg = 1 / 60, cpu = 0, timer = 0, hold = 5;
+  return (dt: number, cpuMs: number) => {
     avg += (dt - avg) * 0.05;
+    cpu += (cpuMs / 1000 - cpu) * 0.05;
     timer += dt;
-    holdUp -= dt;
-    if (timer < 1.5) return;
+    hold -= dt;
+    if (timer < 2 || hold > 0) return;
     timer = 0;
+    // the graphics card is the bottleneck when the frame takes well over what the page's code does
+    const gpuBound = avg - cpu > 1 / 120;
     let next = ratio;
-    // Against a 60 Hz screen a frame that is late at all is shown a whole refresh late: an average of 50 fps is
-    // 60 with every fifth frame doubled, which is what reads as lag. So it gives way as soon as frames are missed.
-    if (avg > 1 / 55) {
-      next = Math.max(floor, ratio * (avg > 1 / 45 ? 0.8 : 0.9));
-      holdUp = 20; // after a drop, wait a while before trying higher again, or it see-saws
-    } else if (avg < 1 / 58 && holdUp <= 0) next = Math.min(top, ratio * 1.05);
+    if (avg > 1 / 50 && gpuBound) next = Math.max(floor, ratio - 0.25);
+    else if (avg < 1 / 58) next = Math.min(top, ratio + 0.25);
     if (Math.abs(next - ratio) > 0.01) {
       ratio = next;
       renderer.setPixelRatio(ratio);
+      hold = 20; // a while at the new size before it is judged again, so it never see-saws
     }
   };
 }
