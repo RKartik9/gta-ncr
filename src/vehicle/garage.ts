@@ -33,7 +33,7 @@ const BIKE: CarSpec = {
   mass: 290, length: 2.1, width: 0.8, height: 1.2, groundClearance: 0.16, centreOfMass: 0.36,
   wheelRadius: 0.3, track: 0.5, axleFront: 0.7, axleRear: -0.7, suspensionRest: 0.22, suspensionStiffness: 40,
   weightFront: 0.48, antiRoll: 20, driveFront: 0, engineForce: 2500, reverseForce: 500, brakeDecel: 12, brakeFront: 0.65,
-  topSpeed: 55, reverseSpeed: 2, maxSteer: 0.5, gripFront: 1.15, gripRear: 1.2, drag: 0.3, downforce: 0,
+  topSpeed: 55, reverseSpeed: 2, maxSteer: 0.62, gripFront: 1.15, gripRear: 1.2, drag: 0.3, downforce: 0,
   hoodCamera: [0, 1.3, 0.3], cockpitCamera: [0, 1.4, -0.15],
 };
 const KINDS: Record<GarageEntry['kind'], CarSpec> = { car: CRETA, suv: THAR, sports: SIAN, bike: BIKE };

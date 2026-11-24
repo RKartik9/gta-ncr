@@ -42,7 +42,7 @@ const LIMITED_SLIP = 90;
  * It pulls on the body, not the tyres, so it cannot lock a wheel or roll a tall car over. */
 const BRAKE_ASSIST = 0.6;
 /** m/s at which the steering lock has come halfway down to its high-speed limit. Raise to keep more lock at speed. */
-const LOCK_FADE = 20;
+const LOCK_FADE = 28;
 /** Share of their sideways grip the rear tyres keep in a power slide (accelerate and brake held together). Lower slides more. */
 const DRIFT_GRIP = 0.45;
 /** Slide angle (radians) past which the rear tyres get their grip back, so a drift holds an angle rather than spinning. */
@@ -256,7 +256,7 @@ export class Vehicle {
     const lock = least + (c.maxSteer - least) * (hold + (1 - hold) / (1 + (Math.abs(v) / LOCK_FADE) ** 1.6));
     const target = clamp(input.steer * lock + this.drift * (0.8 - 0.4 * hold * (1 - fast)) * sliding, -c.maxSteer, c.maxSteer);
     // and it goes on more gently, but comes back to catch a slide as fast as ever
-    const rate = (input.steer === 0 || sliding > 0 || hold > 0 ? 3.2 : 2.2 / (1 + Math.abs(v) / 30)) * dt;
+    const rate = (input.steer === 0 || sliding > 0 || hold > 0 ? 4 : 3.2 / (1 + Math.abs(v) / 40)) * dt;
     this.steer += clamp(target - this.steer, -rate, rate);
 
     for (let n = 0; n < 4; n++) ctl.setWheelSteering(n, n < 2 ? this.steer : 0);

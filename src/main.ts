@@ -63,6 +63,8 @@ async function boot() {
   // its trees and poles off roads that belong to the cell next door. Fetched while the renderer starts.
   const area = CITY === 'mumbai' ? 'mumbai' : 'central';
   const overviewLoad = loadJson<Tile>(`${area}/overview`);
+  // which car to start in; its model is fetched while the city is built
+  const garageLoad = loadGarage().then(() => Math.max(0, CARS.findIndex((c) => c.id === (query.get('car') ?? saved?.car))));
   setLoading('Starting the renderer…', false, 0.05);
   const renderer = await createRenderer(canvas, quality, query.has('gl'));
   setAnisotropy(Math.min(quality.anisotropy, renderer.getMaxAnisotropy()));
@@ -115,6 +117,9 @@ async function boot() {
     }
     return p;
   };
+  void garageLoad.then((i) => getModel(CARS[i]));
+  // ponytail: only the next car in the V cycle is fetched ahead; the rest load when asked for
+  const prefetchNext = () => void getModel(CARS[(carIndex + 1) % CARS.length]);
 
   // Start on the Inner Circle, facing the way its one-way traffic runs; ?x=&z= starts anywhere on the map.
   // (in Mumbai: on the Sea Link out of Bandra, heading for Worli)
@@ -136,9 +141,8 @@ async function boot() {
   if (query.has('h')) start.heading = THREE.MathUtils.degToRad(Number(query.get('h')));
 
   setLoading('Bringing the car round…', false, 0.92);
-  await loadGarage();
+  let carIndex = await garageLoad;
   setupImporter(() => model.spec);
-  let carIndex = Math.max(0, CARS.findIndex((c) => c.id === (query.get('car') ?? saved?.car)));
   let model = await getModel(CARS[carIndex]);
   // a car saved (or started) on a flyover or the Sea Link is set down on its deck
   let vehicle = new Vehicle(world, model.spec, start.x, start.z, start.heading, deckHeight(streamer.tiles, start.x, start.z));
@@ -154,6 +158,7 @@ async function boot() {
     // game keeps running (and the toast shows) instead of stalling on the first frame with the new car.
     hud.say(`Bringing the ${CARS[next].name} round…`);
     const incoming = await getModel(CARS[next]);
+    await renderer.compileAsync(incoming.group, camera, scene);
     const p = vehicle.body.translation();
     const heading = vehicle.heading;
     // the road under the old car (a flyover deck, or the ground below one), for the new one to stand on
@@ -174,6 +179,7 @@ async function boot() {
     hud.say(model.spec.name);
     sound.setCar(model.spec);
     switching = false;
+    prefetchNext();
   }
 
   const shadows = setupShadows(sun, daynight.lightDir, quality);
@@ -419,16 +425,15 @@ async function boot() {
   musicVolume.addEventListener('input', () => music.setVolume(Number(musicVolume.value)));
   sfxVolume.addEventListener('input', () => sound.setVolume(Number(sfxVolume.value) / 100));
 
-  // Every car drawn once with its lights off and once with them on, behind the loading screen. The first draw of
-  // each builds its shaders (half a second or more); done here, switching car or lights later never freezes.
+  // The car drawn once with its lights off and once with them on, behind the loading screen: the first draw builds
+  // its shaders (half a second or more). Other cars are fetched later and readied in switchCar.
   setLoading('Getting the cars ready…', false, 0.96);
   {
     const here = model;
     const ahead = new THREE.Vector3();
     camera.getWorldDirection(ahead);
     for (const spec of CARS) {
-      // a garage may hold any number of imported vehicles: those wait until they are asked for
-      if (spec.imported && spec !== here.spec && spec.id !== here.spec.id) continue;
+      if (spec.id !== here.spec.id) continue;
       const m = await getModel(spec);
       scene.remove(model.group);
       scene.add(m.group);
@@ -570,6 +575,7 @@ async function boot() {
     if (firstFrame) {
       firstFrame = false;
       hideLoading();
+      prefetchNext();
       if (gpu.kind === 'software' || otherCard) hud.say(`Drawing on ${gpu.name}: slow graphics. Esc › Graphics says how to use a faster card.`, 9000);
     }
     perf.frames++;
