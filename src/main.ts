@@ -241,6 +241,8 @@ async function boot() {
   traffic.setRoads(all.roads.filter((r) => isStreet(r) && !r.elev), all.signals, carPos().x, carPos().z);
   pedestrians.setRoads(all.roads.filter(hasPavement));
   traffic.walkers = pedestrians.positions;
+  pedestrians.vehicles = traffic.positions;
+  traffic.onHonk = (x, z, kind, pitch) => sound.honk(Math.hypot(x - model.group.position.x, z - model.group.position.z), kind, pitch);
   bigmap.setTiles([all]);
   const toggleMap = (open = !bigmap.open) => {
     if (open) hud.toggleMenu(false);
@@ -311,6 +313,7 @@ async function boot() {
   const dry = new THREE.Vector2(start.x, start.z);
   let roadTimer = 0;
   let firstFrame = true;
+  let wasHonking = false;
 
   const governor = resolutionGovernor(renderer, quality);
 
@@ -475,7 +478,8 @@ async function boot() {
       previous.p.copy(current.p);
       previous.q.copy(current.q);
       vehicle.update(input, STEP);
-      traffic.step(STEP, current.p.x, current.p.z);
+      const pv = vehicle.body.linvel();
+      traffic.step(STEP, current.p.x, current.p.z, pv.x, pv.z);
       stepWorld(world);
       readPose(current);
       // the sea is not a road: a car that runs off the land (or off the Sea Link) is stopped at the water's edge
@@ -496,7 +500,15 @@ async function boot() {
       sound.crash(jolt);
     }
     sound.setPaused(paused);
-    sound.setHorn(!bigmap.open && keys.held('KeyH'));
+    const honking = !bigmap.open && keys.held('KeyH');
+    sound.setHorn(honking);
+    if (honking && !wasHonking) {
+      // the car in front makes way, people in the road hurry out of it
+      const fx = Math.sin(vehicle.heading), fz = Math.cos(vehicle.heading);
+      traffic.hornFrom(current.p.x, current.p.z, fx, fz);
+      pedestrians.hornFrom(current.p.x, current.p.z, fx, fz);
+    }
+    wasHonking = honking;
     // tyres at their limit come through the controller as a light buzz, the anti-lock as a harder one
     if (steps && (vehicle.skid > 0.2 || vehicle.abs)) keys.rumble(Math.max(vehicle.skid * 0.35, vehicle.abs ? 0.3 : 0), 60);
     sound.update(dt, vehicle.speed, vehicle.wheelSpeed, input.throttle, vehicle.skid);

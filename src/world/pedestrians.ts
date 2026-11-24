@@ -21,7 +21,13 @@ const FIGURES: [string, number][] = [
 interface Side {
   /** flat [x, z, ...]: a road's centre line pushed out onto its pavement on one side */
   pts: number[];
+  /** the pavement across the road, point for point; and the road's width */
+  partner?: Side;
+  width: number;
 }
+
+/** A vehicle on the road, for judging a gap to cross in. */
+type Mover = { x: number; z: number; vx: number; vz: number };
 
 interface Walker {
   on: boolean;
@@ -44,9 +50,19 @@ interface Walker {
   scale: number;
   /** which of the loaded figures this is */
   figure: number;
-  /** knocked down by a car: thrown, then flat on the ground until `timer` runs out */
-  state: 'walk' | 'down';
+  /**
+   * walk: along the pavement. idle: stopped a while (a shop window, a phone). wait: at the kerb for a gap in the
+   * traffic. cross: over the road to the pavement opposite. down: knocked down by a car, flat until `timer` runs out.
+   */
+  state: 'walk' | 'down' | 'idle' | 'wait' | 'cross';
   timer: number;
+  /** seconds until they next make up their mind what to do */
+  decide: number;
+  /** where a crossing ends */
+  tx: number;
+  tz: number;
+  /** seconds left of hurrying: a car coming, or a horn */
+  hurry: number;
   vy: number;
   y: number;
 }
@@ -129,7 +145,8 @@ async function walkCycle(file: string, height: number, count: number, scene: THR
 /**
  * People walking the pavements near the player: men and women, each figure frozen into a walk cycle. They keep to the pavement either side of the streets, turn back at a road's end,
  * step out of the way of a car coming at them, and are knocked flat (and get up again) by one that does not stop.
- * ponytail: no crossing roads and no avoiding each other or street furniture; they walk through lamp posts.
+ * Now and then one stops a while, or waits at the kerb for a gap in the traffic and crosses (and runs if a car comes).
+ * ponytail: they cross anywhere, never at a zebra or with the signals; add that if the map ever carries crossings.
  */
 export class Pedestrians {
   private sides: Side[] = [];
@@ -145,8 +162,10 @@ export class Pedestrians {
   private s = new THREE.Vector3();
   private up = new THREE.Vector3(0, 1, 0);
   private xAxis = new THREE.Vector3(1, 0, 0);
-  /** where every walker on the pavement is, for the traffic to stop for */
+  /** where every walker on the pavement or crossing is, for the traffic to stop for */
   readonly positions: { x: number; z: number }[] = [];
+  /** the traffic, for judging a gap to cross in */
+  vehicles: Mover[] = [];
 
   private world: RAPIER.World;
 
@@ -154,7 +173,7 @@ export class Pedestrians {
     this.world = world;
     for (let i = 0; i < count; i++) {
       this.walkers.push({
-        on: false, side: { pts: [] }, seg: 0, t: 0, dir: 1, speed: 1.3, lane: 0, x: 0, z: 0, vx: 0, vz: 0, yaw: 0, phase: 0, scale: 1, figure: 0,
+        on: false, side: { pts: [], width: 0 }, seg: 0, decide: 0, tx: 0, tz: 0, hurry: 0, t: 0, dir: 1, speed: 1.3, lane: 0, x: 0, z: 0, vx: 0, vz: 0, yaw: 0, phase: 0, scale: 1, figure: 0,
         state: 'walk', timer: 0, vy: 0, y: 0,
       });
     }
@@ -173,6 +192,7 @@ export class Pedestrians {
   setRoads(roads: Road[]) {
     for (const r of roads) {
       if (r.pts.length < 4 || r.width < 5) continue;
+      const pair: Side[] = [];
       for (const sideSign of [1, -1]) {
         const pts: number[] = [];
         const off = (r.width / 2 + 1.3) * sideSign;
@@ -182,14 +202,53 @@ export class Pedestrians {
           const dx = r.pts[ni] - r.pts[pi], dz = r.pts[ni + 1] - r.pts[pi + 1], l = Math.hypot(dx, dz) || 1;
           pts.push(r.pts[i] - (dz / l) * off, r.pts[i + 1] + (dx / l) * off);
         }
-        const n = this.sides.push({ pts }) - 1;
+        const n = this.sides.push({ pts, width: r.width }) - 1;
+        pair.push(this.sides[n]);
         for (let i = 0; i < pts.length; i += 2) {
           const k = `${Math.floor(pts[i] / BUCKET)},${Math.floor(pts[i + 1] / BUCKET)}`;
           const list = this.buckets.get(k) ?? this.buckets.set(k, []).get(k)!;
           if (list[list.length - 1] !== n) list.push(n);
         }
       }
+      [pair[0].partner, pair[1].partner] = [pair[1], pair[0]];
     }
+  }
+
+  /**
+   * Whether the way from `w` to where their crossing ends is clear: nothing on it, and nothing that will be on it
+   * within `seconds`. (px, pz, pvx, pvz) is the player's car.
+   */
+  private clear(w: Walker, seconds: number, player: Mover) {
+    const ax = w.x, az = w.z, bx = w.tx - ax, bz = w.tz - az, bl2 = bx * bx + bz * bz || 1;
+    const near = (x: number, z: number) => {
+      const t = Math.max(0, Math.min(1, ((x - ax) * bx + (z - az) * bz) / bl2));
+      return Math.hypot(x - ax - bx * t, z - az - bz * t);
+    };
+    for (const v of [player, ...this.vehicles]) {
+      if (Math.hypot(v.x - ax, v.z - az) > 80) continue;
+      for (let t = 0; t <= seconds; t += 0.5) if (near(v.x + v.vx * t, v.z + v.vz * t) < 3.5) return false;
+    }
+    return true;
+  }
+
+  /** The player sounded the horn from (px, pz): whoever is in the road in front of them hurries out of it. */
+  hornFrom(px: number, pz: number, fx: number, fz: number) {
+    for (const w of this.walkers) {
+      if (!w.on || (w.state !== 'cross' && w.state !== 'wait')) continue;
+      const rx = w.x - px, rz = w.z - pz, along = rx * fx + rz * fz;
+      if (along < 0 || along > 30) continue;
+      if (w.state === 'cross') w.hurry = 3;
+      else w.timer = 0; // at the kerb: a step back, and wait for a proper gap
+    }
+  }
+
+  /** The player's car at (px, pz) moving (vx, vz) runs `w` down if it is on them: returns how hard, 0 if it is not. */
+  private struck(w: Walker, px: number, pz: number, vx: number, vz: number) {
+    const speed = Math.hypot(vx, vz);
+    if (speed <= 2.5 || Math.hypot(w.x - px, w.z - pz) >= 1.3) return 0;
+    const cfx = vx / speed, cfz = vz / speed, across = (w.x - px) * cfz - (w.z - pz) * cfx;
+    Object.assign(w, { state: 'down', timer: 3.5, vx: vx * 0.7 + (across > 0 ? cfz : -cfz) * 1.5, vz: vz * 0.7 + (across > 0 ? -cfx : cfx) * 1.5, vy: Math.min(6, speed * 0.35) });
+    return speed;
   }
 
   private spawn(w: Walker, px: number, pz: number, near: number) {
@@ -209,6 +268,7 @@ export class Pedestrians {
     Object.assign(w, {
       on: true, side, seg: at.seg, t: at.t, dir, speed, lane, x, z, vx: at.fx * speed, vz: at.fz * speed, yaw: Math.atan2(at.fx, at.fz),
       phase: Math.random(), scale: 0.95 + Math.random() * 0.1, figure: Math.floor(Math.random() * this.frames.length), state: 'walk', timer: 0, y: 0, vy: 0,
+      decide: 3 + Math.random() * 15, hurry: 0,
     });
   }
 
@@ -277,6 +337,59 @@ export class Pedestrians {
         continue;
       }
 
+      // Now and then they make up their minds: stop a while, or cross over to the other side.
+      w.hurry -= dt;
+      if (w.state === 'walk' && (w.decide -= dt) <= 0) {
+        w.decide = 6 + Math.random() * 16;
+        const r = Math.random();
+        if (r < 0.2) Object.assign(w, { state: 'idle', timer: 2 + Math.random() * 7, vx: 0, vz: 0 });
+        else if (r < 0.45 && w.side.partner && w.side.width < 24) {
+          // square across the road from where they stand
+          const there = this.along(w.side.partner, w.seg, 0, 1, w.t);
+          Object.assign(w, { state: 'wait', timer: 0, tx: there.x, tz: there.z, vx: 0, vz: 0 });
+        }
+      }
+      if (w.state === 'idle' || w.state === 'wait' || w.state === 'cross') {
+        const struck = this.struck(w, px, pz, vx, vz);
+        if (struck) {
+          hit = Math.max(hit, struck);
+          continue;
+        }
+        let face = w.yaw;
+        if (w.state === 'idle') {
+          if ((w.timer -= dt) <= 0) w.state = 'walk';
+        } else if (w.state === 'wait') {
+          // a gap: nothing coming for a good few seconds; after a long wait, any gap will do
+          w.timer += dt;
+          face = Math.atan2(w.tx - w.x, w.tz - w.z);
+          if (this.clear(w, w.timer > 7 ? 1.5 : 4, { x: px, z: pz, vx, vz })) w.state = 'cross';
+          else if (w.timer > 18) w.state = 'walk'; // gave up
+        } else {
+          const dx = w.tx - w.x, dz = w.tz - w.z, d = Math.hypot(dx, dz);
+          if (d < 0.4) {
+            // over: on along the far pavement, whichever way
+            Object.assign(w, { state: 'walk', side: w.side.partner!, dir: Math.random() < 0.5 ? 1 : -1, decide: 8 + Math.random() * 16 });
+          } else {
+            // a brisk walk across, a run if something is coming
+            if (!this.clear(w, 2, { x: px, z: pz, vx, vz })) w.hurry = Math.max(w.hurry, 0.5);
+            const pace = w.speed * (w.hurry > 0 ? 2.2 : 1.15);
+            w.vx = (dx / d) * pace;
+            w.vz = (dz / d) * pace;
+            w.x += w.vx * dt;
+            w.z += w.vz * dt;
+            face = Math.atan2(dx, dz);
+            w.phase = (w.phase + (pace * dt) / STRIDE) % 1;
+          }
+        }
+        if (w.state !== 'cross') {
+          w.vx = w.vz = 0;
+          w.phase = Math.round(w.phase * 2) / 2 % 1; // standing: feet together
+        }
+        const dy = Math.atan2(Math.sin(face - w.yaw), Math.cos(face - w.yaw));
+        w.yaw += Math.max(-5 * dt, Math.min(5 * dt, dy));
+        continue;
+      }
+
       // where they are along the pavement, from where they actually stand
       const here = this.along(w.side, w.seg, w.t, 1, 0);
       const dirX = here.fx, dirZ = here.fz;
@@ -339,9 +452,9 @@ export class Pedestrians {
       // a car bearing down on them: a quick jump out of its line, or too late
       const rx = w.x - px, rz = w.z - pz, dCar = Math.hypot(rx, rz);
       const ahead = rx * cfx + rz * cfz, across = rx * cfz - rz * cfx;
-      if (speed > 2.5 && dCar < 1.3) {
-        hit = Math.max(hit, speed);
-        Object.assign(w, { state: 'down', timer: 3.5, vx: vx * 0.7 + (across > 0 ? cfz : -cfz) * 1.5, vz: vz * 0.7 + (across > 0 ? -cfx : cfx) * 1.5, vy: Math.min(6, speed * 0.35) });
+      const struck = dCar < 1.3 ? this.struck(w, px, pz, vx, vz) : 0;
+      if (struck) {
+        hit = Math.max(hit, struck);
         continue;
       }
       if (speed > 3 && ahead > 0 && ahead < speed * 1.5 + 4 && Math.abs(across) < 2.4) {
@@ -389,7 +502,7 @@ export class Pedestrians {
     }
 
     this.positions.length = 0;
-    for (const w of live) if (w.on && w.state === 'walk') this.positions.push({ x: w.x, z: w.z });
+    for (const w of live) if (w.on && (w.state === 'walk' || w.state === 'cross')) this.positions.push({ x: w.x, z: w.z });
     this.started = true;
     this.draw(px, pz);
     return hit;

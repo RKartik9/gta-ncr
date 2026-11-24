@@ -450,19 +450,49 @@ export class LampLights {
 }
 
 /**
- * OpenStreetMap puts a signal on the junction node, in the middle of the road. The pole goes on the nearest
- * corner clear of every carriageway; a junction with no clear corner close by gets none.
+ * OpenStreetMap puts a signal on the junction node, in the middle of the road. Every road into it gets a pole of
+ * its own: on the left kerb (India keeps left) at the stop line, facing the traffic coming in, which is where
+ * the traffic stops. Poles close together are one pole. A junction none of whose roads can be found gets one on
+ * the nearest corner clear of every carriageway.
  */
 function signalSpots(tile: Tile, onRoad: ReturnType<typeof roadIndex>) {
   const out: [number, number, number][] = [];
+  const taken = (x: number, z: number) => out.some(([ox, oz]) => Math.hypot(ox - x, oz - z) < 6);
   for (let i = 0; i < tile.signals.length; i += 2) {
     const sx = tile.signals[i], sz = tile.signals[i + 1];
     if (!inside(tile, sx, sz)) continue;
+    // the ways in: the direction traffic comes along each road meeting here, and that road's half width
+    const ways: [number, number, number][] = [];
+    let box = 0;
+    for (const r of tile.roads) {
+      const p = r.pts;
+      for (let k = 0; k < p.length; k += 2) {
+        if (Math.hypot(p[k] - sx, p[k + 1] - sz) > 2) continue;
+        box = Math.max(box, r.width / 2);
+        const from = (j: number) => {
+          const dx = p[k] - p[j], dz = p[k + 1] - p[j + 1], l = Math.hypot(dx, dz);
+          if (l > 1) ways.push([dx / l, dz / l, r.width / 2]);
+        };
+        if (k >= 2) from(k - 2);
+        if (k + 2 < p.length && !r.oneway) from(k + 2); // one-way traffic only comes the way the road is drawn
+      }
+    }
+    let placed = false;
+    for (const [fx, fz, half] of ways) {
+      for (let back = box + 2; back <= box + 10; back += 2) {
+        const x = sx - fx * back + fz * (half + 1), z = sz - fz * back - fx * (half + 1);
+        if (onRoad(x, z, 0.3)) continue;
+        if (!taken(x, z)) out.push([x, z, Math.atan2(-fx, -fz)]);
+        placed = true;
+        break;
+      }
+    }
+    if (placed) continue;
     search: for (let d = 3.5; d <= 16; d += 1.5) {
       for (let a = 0; a < 8; a++) {
         const x = sx + Math.cos(Math.PI / 4 + (a * Math.PI) / 4) * d, z = sz + Math.sin(Math.PI / 4 + (a * Math.PI) / 4) * d;
         if (!onRoad(x, z, 0.6)) {
-          out.push([x, z, Math.atan2(sx - x, sz - z)]); // lights face the junction
+          if (!taken(x, z)) out.push([x, z, Math.atan2(sx - x, sz - z)]); // lights face the junction
           break search;
         }
       }

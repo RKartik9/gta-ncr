@@ -26,6 +26,8 @@ export class Sound {
   private wind!: { filter: BiquadFilterNode; gain: GainNode };
   private horn: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
   private hornOn = false;
+  /** the street's horns: none before this time */
+  private npcHornFree = 0;
   private paused = false;
   private rpm = IDLE;
   private gear = 0;
@@ -199,6 +201,40 @@ export class Sound {
       this.skid.gain.gain.setTargetAtTime(Math.min(0.9, skid * 1.2), t, 0.06);
       this.skid.src.playbackRate.setTargetAtTime(0.9 + Math.min(0.2, v / 250), t, 0.1);
     }
+  }
+
+  /**
+   * Another driver's horn, `distance` metres away: a tap, two taps, or a long blast. Played from the steady note
+   * (the clip's press is a thump that, cut short, sounded like a bark), shaped so it starts and stops cleanly,
+   * and muffled with distance as a real one is. One at a time across the street, so it never turns into a chorus.
+   */
+  honk(distance: number, kind: 'tap' | 'double' | 'long', pitch: number) {
+    const buf = this.clips.get('horn.wav');
+    if (!this.ctx || !buf || distance > 150) return;
+    const t = this.ctx.currentTime;
+    if (t < this.npcHornFree) return;
+    const notes = kind === 'tap' ? [[0, 0.22]] : kind === 'double' ? [[0, 0.16], [0.28, 0.2]] : [[0, 1 + Math.random() * 0.5]];
+    const end = notes[notes.length - 1][0] + notes[notes.length - 1][1];
+    this.npcHornFree = t + end + 1.2;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.loopStart = HORN_LOOP;
+    src.loopEnd = buf.duration;
+    src.playbackRate.value = pitch;
+    const muffle = this.ctx.createBiquadFilter();
+    muffle.type = 'lowpass';
+    muffle.frequency.value = 9000 / (1 + distance / 30);
+    const gain = this.ctx.createGain();
+    const level = 0.5 / (1 + distance / 15);
+    gain.gain.setValueAtTime(0, t);
+    for (const [at, length] of notes) {
+      gain.gain.setTargetAtTime(level, t + at, 0.008);
+      gain.gain.setTargetAtTime(0, t + at + length, 0.015);
+    }
+    src.connect(muffle).connect(gain).connect(this.bus);
+    src.start(t, HORN_LOOP);
+    src.stop(t + end + 0.1);
   }
 
   /** A hit: `strength` is the speed lost, m/s. Light knocks clank; hard ones crunch, the hardest break glass. */

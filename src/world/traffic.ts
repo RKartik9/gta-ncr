@@ -1,5 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three/webgpu';
+import { attribute, materialEmissive, select, sin, step, time, vec3 } from 'three/tsl';
 import type { Road } from './tile.ts';
 import { ROAD_HEIGHT } from './ground.ts';
 import { TRAFFIC_GROUPS, WRECK_GROUPS } from './physics.ts';
@@ -34,6 +35,26 @@ interface Car {
   speed: number;
   /** share of the road's speed this driver likes */
   cruise: number;
+  /** the driver: 0 patient and careful, 1 impatient. Shapes their headway, how hard they pull away, amber lights and the horn. */
+  aggression: number;
+  /** seconds of gap they keep to the car in front, and the acceleration they like, m/s² */
+  headway: number;
+  accel: number;
+  /** seconds before they move off once the way ahead clears: nobody pulls away the instant the light changes */
+  react: number;
+  /** seconds until they next think about changing lane, and until they may sound the horn again */
+  laneTimer: number;
+  honk: number;
+  /** seconds held up by the player */
+  wait: number;
+  /** seconds left of hurrying, after the player has hooted at them */
+  hurry: number;
+  /** brake lights on; the indicator going (1 left, 2 right, 3 both: hazards) */
+  brake: boolean;
+  signal: number;
+  /** this car's horn: its pitch, and how many times it has sounded at the player this hold-up */
+  hornPitch: number;
+  honks: number;
   x: number;
   z: number;
   /** sideways offset from the centre line, eased so a turn does not jump lanes */
@@ -54,6 +75,8 @@ interface Car {
   /** the velocity it was last told to drive at: anything else after a step is something having hit it */
   vx: number;
   vz: number;
+  /** the turn it was last told to make, rad/s */
+  spinY: number;
   kind: TrafficKind;
   /** which copy of its kind's meshes it is drawn as */
   slot: number;
@@ -81,6 +104,8 @@ const RED = 0, AMBER_ON = 1, GREEN_ON = 2;
 /** per-copy tint of a signal mesh: which lamp is lit */
 const LAMPS = [new THREE.Color(1, 0, 0), new THREE.Color(0, 1, 0), new THREE.Color(0, 0, 1)];
 const STUCK = 6;
+/** Intelligent Driver Model: the gap kept when stopped (m), the braking a driver is comfortable with and the most they will brake (m/s²). */
+const S0 = 2.2, COMFORT = 2.6, EMERGENCY = 9;
 /** headings closer than this (as |cos|) can share a junction: the same road, either way */
 const ALONG = 0.7;
 
@@ -95,8 +120,10 @@ const key = (x: number, z: number) => `${Math.floor(x / BUCKET)},${Math.floor(z 
 /**
  * Cars that drive themselves round the streets near the player. They keep to the left lane, obey one-way
  * streets, stop at red lights, take turns through junctions (one road's traffic at a time), slow behind
- * whatever is ahead of them (the player included) and ease off for corners. Out of sight they are taken away
- * and set down again somewhere else within the draw distance. They are solid but unmovable to the player.
+ * whatever is ahead of them (the player included) and ease off for corners. Each driver is someone: patient or
+ * impatient, which sets the gap they keep, how hard they pull away, whether they run an amber and how soon they
+ * sound the horn at a player in their way. Held up, they change lane; the player's horn moves them over. Out of sight they are taken away
+ * and set down again somewhere else within the draw distance. Hit by the player, even lightly, they are knocked off their line and left to the physics.
  * The signals they obey are the map's own, and the lamps on every signal pole show the phase.
  */
 export class Traffic {
@@ -116,6 +143,10 @@ export class Traffic {
   private claims = new Map<number, Set<Car>>();
   /** people on the pavement and stepping off it: a car stops for one in its lane */
   walkers: { x: number; z: number }[] = [];
+  /** every vehicle driving, and the velocity it drives at: for people to judge a gap to cross in */
+  readonly positions: { x: number; z: number; vx: number; vz: number }[] = [];
+  /** a driver sounds the horn at (x, z): a quick tap, two taps, or leaning on it; `pitch` is that car's horn */
+  onHonk?: (x: number, z: number, kind: 'tap' | 'double' | 'long', pitch: number) => void;
   private time = 0;
   private lampTimer = 0;
   private cars: Car[] = [];
@@ -145,7 +176,7 @@ export class Traffic {
     for (const [kind, n] of per) {
       // the materials remade for drawing many copies; the paint takes each copy's colour
       const shape = kind.shape();
-      const mats = shape.materials.map((m, k) => nodeMaterial(m, k === shape.paint));
+      const mats = shape.materials.map((m, k) => nodeMaterial(m, k === shape.paint, k === shape.head ? 'head' : k === shape.tail ? 'tail' : undefined));
       const shell = new Instances(shape.shell, mats, Array(n).fill(HIDDEN), true);
       const wheels = new Instances(shape.wheel, shape.wheelMaterials.map((m) => nodeMaterial(m)), Array(n * kind.wheels.length).fill(HIDDEN), true);
       this.lamps.push({ head: mats[shape.head], tail: mats[shape.tail] });
@@ -178,7 +209,7 @@ export class Traffic {
       );
       body.setEnabled(false);
       shells.get(kind)!.setColorAt(slot, new THREE.Color(kind.colours[Math.floor(Math.random() * kind.colours.length)]));
-      this.cars.push({ on: false, edge: 0, next: -1, s: 0, lane: 0, speed: 0, cruise: 1, x: 0, z: 0, ox: 0, oz: 0, yaw: 0, spin: 0, stuck: 0, red: false, claim: -1, wrecked: false, wreckTime: 0, vx: 0, vz: 0, kind, slot, body, collider });
+      this.cars.push({ on: false, edge: 0, next: -1, s: 0, lane: 0, speed: 0, cruise: 1, aggression: 0, headway: 1.4, accel: 1.8, react: 0, laneTimer: 0, honk: 0, wait: 0, hurry: 0, brake: false, signal: 0, hornPitch: 1, honks: 0, spinY: 0, x: 0, z: 0, ox: 0, oz: 0, yaw: 0, spin: 0, stuck: 0, red: false, claim: -1, wrecked: false, wreckTime: 0, vx: 0, vz: 0, kind, slot, body, collider });
     });
   }
 
@@ -300,7 +331,15 @@ export class Traffic {
     car.next = this.pickNext(car.edge, car.kind);
     car.s = 0;
     car.lane = Math.floor(Math.random() * e.lanes.length);
-    car.cruise = 0.75 + Math.random() * 0.35;
+    // a new driver: the impatient ones want to go faster, sit closer and pull away harder
+    car.aggression = Math.random() ** 1.5;
+    car.cruise = 0.78 + car.aggression * 0.3 + (Math.random() - 0.5) * 0.12;
+    car.headway = 1.9 - car.aggression * 1.0;
+    car.accel = (1.3 + car.aggression * 1.4) * (car.kind.majorOnly || car.kind.topSpeed < 12 ? 0.7 : 1);
+    car.react = car.laneTimer = car.honk = car.wait = car.hurry = car.signal = car.honks = 0;
+    car.brake = false;
+    // a bus or a truck has a deeper horn than a car, an auto a higher one
+    car.hornPitch = (car.kind.majorOnly ? 0.85 : car.kind.topSpeed < 12 ? 1.12 : 1) * (0.96 + Math.random() * 0.08);
     car.speed = e.speed * car.cruise * 0.6;
     car.ox = e.fz * e.lanes[car.lane];
     car.oz = -e.fx * e.lanes[car.lane];
@@ -322,6 +361,7 @@ export class Traffic {
     car.vz = e.fz * car.speed;
     car.body.setLinvel({ x: car.vx, y: 0, z: car.vz }, true);
     car.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    car.spinY = 0;
   }
 
   private remove(car: Car) {
@@ -335,8 +375,8 @@ export class Traffic {
     car.claim = -1;
   }
 
-  /** One physics step. (px, pz) is the player, whom every car keeps clear of. */
-  step(dt: number, px: number, pz: number) {
+  /** One physics step. (px, pz) is the player and (pvx, pvz) their velocity: every car keeps clear of them. */
+  step(dt: number, px: number, pz: number, pvx = 0, pvz = 0) {
     if (!this.edges.length) return;
     this.time += dt;
     const ease = 1 - Math.exp(-5 * dt), turn = 1 - Math.exp(-8 * dt);
@@ -348,8 +388,13 @@ export class Traffic {
       // Knocked off the speed it was set (by 2.5 m/s in one step) or tipped: a crash. From here it is only a
       // body; it goes once nobody is looking.
       const lv = car.body.linvel();
-      if (!car.wrecked && (Math.hypot(lv.x - car.vx, lv.z - car.vz) > 2.5 || 1 - 2 * (r.x * r.x + r.z * r.z) < 0.9)) {
+      // Next to the player it takes far less: a nudge or a swipe from them is a crash, not a wall it shrugs off.
+      const touching = toPlayer < car.kind.length / 2 + PLAYER_LENGTH / 2 + 1;
+      const knocked = Math.hypot(lv.x - car.vx, lv.z - car.vz), spun = Math.abs(car.body.angvel().y - car.spinY);
+      if (!car.wrecked && (knocked > (touching ? 0.8 : 2.5) || (touching && spun > 0.4) || 1 - 2 * (r.x * r.x + r.z * r.z) < 0.9)) {
         car.wrecked = true;
+        car.signal = 3; // hazards on
+        car.brake = false;
         car.collider.setFriction(0.8);
         car.collider.setCollisionGroups(WRECK_GROUPS);
         this.release(car);
@@ -368,25 +413,29 @@ export class Traffic {
         continue;
       }
       let e = this.edges[car.edge];
-      let target = Math.min(e.speed * car.cruise, car.kind.topSpeed);
-      // the player, then the nearest other vehicle in this one's lane ahead; distances are bumper to bumper
       const half = car.kind.length / 2;
-      if (Math.hypot(px - car.x, pz - car.z) < 40) target = Math.min(target, follow(this.ahead(car, e, px, pz) - half - PLAYER_LENGTH / 2));
-      let blocker: Car | null = null, gap = Infinity;
-      for (const o of this.cars) {
-        if (o === car || !o.on) continue;
-        const oe = this.edges[o.edge];
-        if (!o.wrecked && oe.fx * e.fx + oe.fz * e.fz < -0.5) continue; // coming the other way, in its own lane
-        const d = this.ahead(car, e, o.x, o.z) - half - o.kind.length / 2;
-        if (d < gap) [gap, blocker] = [d, o];
-      }
-      for (const w of this.walkers) gap = Math.min(gap, this.ahead(car, e, w.x, w.z) - half - 0.3);
-      const behind = follow(gap);
-      let red = blocker !== null && blocker.red && behind <= target;
-      target = Math.min(target, behind);
-
-      // the next junction, on this edge or the one after: its signal, then the right of way through it
       const n = this.edges[car.next];
+      car.hurry -= dt;
+      let v0 = Math.min(e.speed * car.cruise * (car.hurry > 0 ? 1.15 : 1), car.kind.topSpeed);
+      // a sharp turn coming up: no faster than a comfortable stop down to turning speed allows
+      if (car.next >= 0 && n.fx * e.fx + n.fz * e.fz < 0.6) v0 = Math.min(v0, Math.sqrt(25 + 2 * COMFORT * Math.max(0, e.len - car.s - 4)));
+      let acc = idm(car, v0);
+      // the player, the nearest vehicle in this lane ahead (bumper to bumper, at its speed), anyone on foot in it
+      const toPlayerAhead = toPlayer < 50 ? this.ahead(car, e, px, pz) - half - PLAYER_LENGTH / 2 : Infinity;
+      let byPlayer = false;
+      if (toPlayerAhead < Infinity) {
+        const a = idm(car, v0, toPlayerAhead, Math.max(0, pvx * e.fx + pvz * e.fz));
+        if (a < acc) [acc, byPlayer] = [a, true];
+      }
+      const { blocker, gap } = this.leader(car, e, 0);
+      if (blocker) acc = Math.min(acc, idm(car, v0, gap, blocker.wrecked ? 0 : blocker.speed));
+      for (const w of this.walkers) {
+        const d = this.ahead(car, e, w.x, w.z) - half - 0.3;
+        if (d < Infinity) acc = Math.min(acc, idm(car, v0, d, 0));
+      }
+      let red = blocker !== null && blocker.red && gap < 20;
+
+      // the next junction, on this edge or the one after: its signal, the player in it, then the right of way through it
       const upcoming: [Edge, number][] = car.next >= 0 ? [[e, e.len - car.s], [n, e.len - car.s + n.len]] : [[e, e.len - car.s]];
       for (const [into, d] of upcoming) {
         const j = into.b;
@@ -395,11 +444,17 @@ export class Traffic {
         let stop = false;
         if (into.ctrl >= 0) {
           const lit = this.light(into.ctrl, into.group);
-          // stop for red or amber, unless too close to stop comfortably
-          if (lit !== GREEN_ON && line > (car.speed * car.speed) / 14) {
+          // red: stop unless past stopping. Amber: stop if it can be done comfortably; the impatient need more room to think so.
+          const room = (car.speed * car.speed) / (2 * COMFORT);
+          if ((lit === RED && line > (car.speed * car.speed) / 14) || (lit === AMBER_ON && line > room * (1 + 2 * car.aggression))) {
             stop = true;
             red = true;
           }
+        }
+        // nobody drives into a junction the player is sitting in
+        if (!stop && car.claim !== j && line > 0 && line < 15 && Math.hypot(px - this.xs[j], pz - this.zs[j]) < this.radius[j] + 1) {
+          stop = true;
+          byPlayer = true;
         }
         if (!stop && car.claim !== j && line < 8) {
           const holders = this.claims.get(j);
@@ -414,16 +469,61 @@ export class Traffic {
             (this.claims.get(j) ?? this.claims.set(j, new Set()).get(j)!).add(car);
           }
         }
-        if (stop) target = Math.min(target, Math.max(0, (line - 0.5) * 0.9));
+        // the stop line is a car standing still; IDM keeps S0 short of it, so it is put that much past the line
+        if (stop) acc = Math.min(acc, idm(car, v0, Math.max(0.1, line - 0.5 + S0 - 1), 0));
         break;
       }
-      if (car.next < 0 && e.len - car.s < 10) target = Math.min(target, Math.max(0, (e.len - car.s - 2) * 0.9)); // dead end ahead
-      // ease off for a sharp turn coming up
-      if (car.next >= 0 && e.len - car.s < 18 && n.fx * e.fx + n.fz * e.fz < 0.6) target = Math.min(target, 5);
+      if (car.next < 0) acc = Math.min(acc, idm(car, v0, Math.max(0.1, e.len - car.s - 2 + S0), 0)); // dead end ahead
 
+      // standing still: a moment to react once the way clears, longer for the patient
+      if (car.speed < 0.3) {
+        if (acc <= 0.1) car.react = 0.25 + Math.random() * (1.1 - car.aggression * 0.6);
+        else if (car.react > 0) {
+          car.react -= dt;
+          acc = Math.min(acc, 0);
+        }
+      }
       car.red = red;
-      car.speed += Math.max(-7 * dt, Math.min(2.5 * dt, target - car.speed));
+      const was = car.speed;
+      car.speed = Math.max(0, car.speed + Math.max(-EMERGENCY, Math.min(car.accel, acc)) * dt);
+      // brake lights: slowing down harder than the engine and the air would, or held at a standstill
+      car.brake = car.speed < 0.3 ? acc <= 0.1 : (car.speed - was) / dt < -0.8;
+      // indicators: a turn coming up at the end of this edge, or a change of lane still going on
+      const moving = Math.hypot(car.ox - e.fz * e.lanes[car.lane], car.oz + e.fx * e.lanes[car.lane]) > 0.25;
+      if (!moving && car.signal !== 0) car.signal = 0;
+      if (car.next >= 0 && e.len - car.s < 35 && n.fx * e.fx + n.fz * e.fz < 0.8) car.signal = n.fx * e.fz - n.fz * e.fx > 0 ? 1 : 2;
       car.stuck = car.speed < 0.5 && !red ? car.stuck + dt : car.speed > 3 ? 0 : car.stuck;
+
+      // The horn: held up by the player for longer than this driver's patience (a tap, then two, then leaning on
+      // it, and only the impatient keep on), or cut up by them at speed (one long blast).
+      car.honk -= dt;
+      car.wait = byPlayer && car.speed < 1.5 ? car.wait + dt : Math.max(0, car.wait - 2 * dt);
+      if (car.wait === 0) car.honks = 0;
+      if (car.honk <= 0 && car.wait > 2 + (1 - car.aggression) * 5 && car.honks < 1 + Math.round(car.aggression * 2)) {
+        this.onHonk?.(car.x, car.z, car.honks === 0 ? 'tap' : car.honks === 1 ? 'double' : 'long', car.hornPitch);
+        car.honks++;
+        car.honk = 5 + Math.random() * 5;
+      } else if (car.honk <= 0 && byPlayer && toPlayerAhead < 6 && car.speed > 6) {
+        this.onHonk?.(car.x, car.z, 'long', car.hornPitch);
+        car.honk = 8;
+      }
+
+      // Lanes: held up, it looks for a quicker one; running free, it drifts back over to the left (India keeps left).
+      car.laneTimer -= dt;
+      if (car.laneTimer <= 0 && e.lanes.length > 1 && e.len - car.s > 25) {
+        car.laneTimer = 1 + Math.random() * 2;
+        const here = Math.min(gap, toPlayerAhead);
+        const heldUp = here < 35 && acc < car.accel * 0.3 && car.speed < v0 * 0.85;
+        const tries = heldUp ? (Math.random() < 0.5 ? [car.lane - 1, car.lane + 1] : [car.lane + 1, car.lane - 1]) : Math.random() < 0.3 ? [car.lane + 1] : [];
+        for (const l of tries) {
+          if (l < 0 || l >= e.lanes.length) continue;
+          if (this.laneClear(car, e, l, px, pz, heldUp ? here + 8 : 40)) {
+            car.signal = l > car.lane ? 1 : 2; // a higher lane is further left
+            car.lane = l;
+            break;
+          }
+        }
+      }
       car.s += car.speed * dt;
       car.spin += (car.speed * dt) / car.kind.wheelRadius;
       while (car.s >= e.len) {
@@ -437,12 +537,16 @@ export class Traffic {
         car.next = this.pickNext(car.edge, car.kind);
         car.lane = Math.min(car.lane, e.lanes.length - 1);
       }
-      const off = e.lanes[car.lane];
+      const off = e.lanes[car.lane], pox = car.ox, poz = car.oz;
       car.ox += (e.fz * off - car.ox) * ease;
       car.oz += (-e.fx * off - car.oz) * ease;
       car.x = this.xs[e.a] + e.fx * car.s + car.ox;
       car.z = this.zs[e.a] + e.fz * car.s + car.oz;
-      car.yaw += angle(Math.atan2(e.fx, e.fz) - car.yaw) * turn;
+      // the nose points the way the car is going, so a change of lane is steered rather than slid
+      let lx = (car.ox - pox) / dt, lz = (car.oz - poz) / dt;
+      const ll = Math.hypot(lx, lz), most = car.speed * 0.3;
+      if (ll > most) [lx, lz] = [(lx * most) / ll, (lz * most) / ll];
+      car.yaw += angle((car.speed > 1 ? Math.atan2(e.fx * car.speed + lx, e.fz * car.speed + lz) : Math.atan2(e.fx, e.fz)) - car.yaw) * turn;
       if (!car.on) continue;
       if (toPlayer > this.far + 80) {
         this.remove(car);
@@ -456,6 +560,7 @@ export class Traffic {
       const spinY = Math.max(-3, Math.min(3, angle(car.yaw - Math.atan2(fx, fz)) / dt));
       car.vx = vx;
       car.vz = vz;
+      car.spinY = spinY;
       car.body.setLinvel({ x: vx, y: Math.min(0, lv.y), z: vz }, true);
       car.body.setAngvel({ x: 0, y: spinY, z: 0 }, true);
       // through the junction and clear of it: let the next car have it
@@ -463,6 +568,8 @@ export class Traffic {
       if (c >= 0 && ((e.b !== c && this.edges[car.next]?.b !== c && Math.hypot(car.x - this.xs[c], car.z - this.zs[c]) > this.radius[c] + 2))) this.release(car);
     }
     this.spawn(px, pz);
+    this.positions.length = 0;
+    for (const car of this.cars) if (car.on && !car.wrecked) this.positions.push({ x: car.x, z: car.z, vx: car.vx, vz: car.vz });
     this.draw();
     this.lampTimer -= dt;
     if (this.lampTimer <= 0) {
@@ -471,11 +578,74 @@ export class Traffic {
     }
   }
 
-  /** Metres to (x, z) if it is in front of the car and in its lane, else Infinity. */
-  private ahead(car: Car, e: Edge, x: number, z: number) {
-    const rx = x - car.x, rz = z - car.z;
-    const along = rx * e.fx + rz * e.fz, side = Math.abs(rx * e.fz - rz * e.fx);
-    return along > 0 && along < 45 && side < 2.4 ? along : Infinity;
+  /** Metres to (x, z) if it is in front of the car and in its lane (or the lane `shift` metres to its left), else Infinity. */
+  private ahead(car: Car, e: Edge, x: number, z: number, shift = 0) {
+    const along = this.along(car, e, x, z, shift);
+    return along > 0 && along < 45 ? along : Infinity;
+  }
+
+  /** How far (x, z) is ahead of the car (negative: behind) if it is in the lane `shift` metres to the car's left, else NaN. */
+  private along(car: Car, e: Edge, x: number, z: number, shift: number) {
+    const rx = x - car.x - e.fz * shift, rz = z - car.z + e.fx * shift;
+    return Math.abs(rx * e.fz - rz * e.fx) < 2.4 ? rx * e.fx + rz * e.fz : NaN;
+  }
+
+  /** The nearest vehicle ahead in the car's lane, or the lane `shift` metres to its left, and the gap to it bumper to bumper. */
+  private leader(car: Car, e: Edge, shift: number) {
+    let blocker: Car | null = null, gap = Infinity;
+    for (const o of this.cars) {
+      if (o === car || !o.on) continue;
+      const oe = this.edges[o.edge];
+      if (!o.wrecked && oe.fx * e.fx + oe.fz * e.fz < -0.5) continue; // coming the other way, in its own lane
+      // its tail, middle and nose: a long bus angling in from a merge has its tail in the lane before its middle is
+      const hx = (Math.sin(o.yaw) * o.kind.length) / 2, hz = (Math.cos(o.yaw) * o.kind.length) / 2;
+      let d = Infinity;
+      for (const k of [-1, 0, 1]) d = Math.min(d, this.ahead(car, e, o.x + hx * k, o.z + hz * k, shift));
+      d -= car.kind.length / 2;
+      if (d < gap) [gap, blocker] = [d, o];
+    }
+    return { blocker, gap };
+  }
+
+  /** Whether lane `l` has `room` metres free ahead and nobody close behind, the player included. */
+  private laneClear(car: Car, e: Edge, l: number, px: number, pz: number, room: number) {
+    const shift = e.lanes[l] - e.lanes[car.lane];
+    const clear = (x: number, z: number, len: number) => {
+      const d = this.along(car, e, x, z, shift);
+      if (Number.isNaN(d)) return true;
+      const gap = Math.abs(d) - car.kind.length / 2 - len / 2;
+      return d > 0 ? gap > room : gap > 5 + car.speed * 0.6;
+    };
+    if (!clear(px, pz, PLAYER_LENGTH)) return false;
+    for (const o of this.cars) {
+      if (o === car || !o.on) continue;
+      const oe = this.edges[o.edge];
+      if (!o.wrecked && oe.fx * e.fx + oe.fz * e.fz < -0.5) continue;
+      if (!clear(o.x, o.z, o.kind.length)) return false;
+    }
+    return true;
+  }
+
+  /** The player sounded the horn from (px, pz), facing (fx, fz): the car just in front of them makes way, or hurries. */
+  hornFrom(px: number, pz: number, fx: number, fz: number) {
+    let best: Car | null = null, bestD = 30;
+    for (const car of this.cars) {
+      if (!car.on || car.wrecked) continue;
+      const rx = car.x - px, rz = car.z - pz, along = rx * fx + rz * fz;
+      const e = this.edges[car.edge];
+      if (along > 0 && along < bestD && Math.abs(rx * fz - rz * fx) < 2.5 && e.fx * fx + e.fz * fz > 0.5) [best, bestD] = [car, along];
+    }
+    if (!best) return;
+    best.hurry = 4;
+    const e = this.edges[best.edge];
+    for (const l of [best.lane + 1, best.lane - 1]) {
+      if (l < 0 || l >= e.lanes.length) continue;
+      // the player is behind and wants by: only the others need room
+      if (this.laneClear(best, e, l, Infinity, Infinity, 6)) {
+        best.lane = l;
+        return;
+      }
+    }
   }
 
   /** Each signal pole shows the phase of the traffic that faces it: the way the pole itself faces. */
@@ -518,6 +688,7 @@ export class Traffic {
       const t = car.body.translation(), r = car.body.rotation();
       this.q.set(r.x, r.y, r.z, r.w);
       shell.setMatrixAt(slot, this.m.compose(this.p.set(t.x, t.y + ROAD_HEIGHT, t.z), this.q, this.one));
+      shell.setExtraAt(slot, car.brake ? 1 : 0, car.signal & 1, (car.signal >> 1) & 1);
       this.qs.setFromAxisAngle(this.side, car.spin).premultiply(this.q);
       kind.wheels.forEach(([wx, wz], k) => {
         this.w.set(wx, kind.wheelRadius, wz).applyQuaternion(this.q);
@@ -543,8 +714,17 @@ export class Traffic {
 /** `a` brought into -pi..pi. */
 const angle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
-/** A code-built car's material, remade as a node material that draws `Instances`. */
-function nodeMaterial(m: THREE.Material, tinted = false) {
+/** Each copy's lamps, from its spare numbers: x brake, y left indicator, z right; the indicators blink at 1.5 Hz. */
+const lampState = () => {
+  const ext = attribute('iext', 'vec3');
+  // the model's x is to its left: each half of a lamp cluster blinks for its own side
+  const side = select(attribute('position', 'vec3').x.greaterThan(0), ext.y, ext.z);
+  const amber = vec3(1, 0.45, 0.02).mul(side.mul(step(0, sin(time.mul(9.42)))).mul(5));
+  return { brake: ext.x, amber };
+};
+
+/** A code-built car's material, remade as a node material that draws `Instances`; a lamp lens also shows the brakes and indicators. */
+function nodeMaterial(m: THREE.Material, tinted = false, lamp?: 'head' | 'tail') {
   const src = m as THREE.MeshPhysicalMaterial;
   const params = {
     color: tinted ? 0xffffff : src.color, roughness: src.roughness, metalness: src.metalness, map: src.map,
@@ -553,8 +733,21 @@ function nodeMaterial(m: THREE.Material, tinted = false) {
   const node = src.isMeshPhysicalMaterial
     ? new THREE.MeshPhysicalNodeMaterial({ ...params, clearcoat: src.clearcoat, clearcoatRoughness: src.clearcoatRoughness })
     : new THREE.MeshStandardNodeMaterial(params);
+  if (lamp) {
+    const { brake, amber } = lampState();
+    // the brake lights burn far brighter than the tail lights, day or night
+    node.emissiveNode = lamp === 'tail' ? materialEmissive.add(vec3(1, 0.04, 0.02).mul(brake.mul(4))).add(amber) : materialEmissive.add(amber);
+  }
   return instanced(node, tinted);
 }
 
-/** Speed that keeps a safe distance from something `gap` metres ahead, bumper to bumper. */
-const follow = (gap: number) => Math.max(0, (gap - 2.5) * 0.9);
+/**
+ * Intelligent Driver Model (Treiber): the acceleration a driver at `car.speed` who wants `v0` takes with something
+ * `gap` metres ahead moving at `lead`. Smooth on a free road, firm when closing on a slower car, a stop at a standstill.
+ */
+function idm(car: Car, v0: number, gap = Infinity, lead = 0) {
+  const v = car.speed, free = 1 - (v / Math.max(v0, 0.1)) ** 4;
+  if (gap === Infinity) return car.accel * free;
+  const want = S0 + Math.max(0, v * car.headway + (v * (v - lead)) / (2 * Math.sqrt(car.accel * COMFORT)));
+  return car.accel * (free - (want / Math.max(gap, 0.1)) ** 2);
+}

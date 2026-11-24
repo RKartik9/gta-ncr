@@ -1,8 +1,9 @@
 import * as THREE from 'three/webgpu';
 import { Fn, attribute, dot, materialColor, max, normalLocal, positionLocal, vec4 } from 'three/tsl';
 
-// per copy: the three columns of its rotation and scale, where it stands, and its tint
-const STRIDE = 15;
+// per copy: the three columns of its rotation and scale, where it stands, its tint, and three numbers for the
+// material to use as it likes (the traffic's brake lights and indicators)
+const STRIDE = 18;
 const _x = new THREE.Vector3();
 
 const place = Fn(() => {
@@ -40,7 +41,7 @@ export class Instances extends THREE.Mesh<THREE.InstancedBufferGeometry> {
     for (const { start, count, materialIndex } of shape.groups) g.addGroup(start, count, materialIndex);
     const buffer = new THREE.InstancedInterleavedBuffer(new Float32Array(poses.length * STRIDE), STRIDE);
     if (movable) buffer.setUsage(THREE.DynamicDrawUsage);
-    ['ia', 'ib', 'ic', 'it', 'icol'].forEach((name, k) => g.setAttribute(name, new THREE.InterleavedBufferAttribute(buffer, 3, k * 3)));
+    ['ia', 'ib', 'ic', 'it', 'icol', 'iext'].forEach((name, k) => g.setAttribute(name, new THREE.InterleavedBufferAttribute(buffer, 3, k * 3)));
     g.instanceCount = poses.length;
     super(g, material);
     this.shape = shape;
@@ -76,6 +77,11 @@ export class Instances extends THREE.Mesh<THREE.InstancedBufferGeometry> {
 
   setColorAt(i: number, c: THREE.Color) {
     this.data.set([c.r, c.g, c.b], i * STRIDE + 12);
+  }
+
+  /** The copy's three spare numbers, read in the material as attribute('iext'). */
+  setExtraAt(i: number, x: number, y: number, z: number) {
+    this.data.set([x, y, z], i * STRIDE + 15);
   }
 
   /** Frees this mesh's own data and leaves the shape, which every other copy of it still uses. */
