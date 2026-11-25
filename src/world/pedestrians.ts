@@ -13,7 +13,7 @@ const STRIDE = 1.5;
 const DRAWN = 90;
 const BUCKET = 100;
 /** the people, under public/models (credits in people/license.txt), and how tall each stands */
-const FIGURES: [string, number][] = [
+export const FIGURES: [string, number][] = [
   ['rider/model.glb', 1.75], ['people/man_arab.glb', 1.76], ['people/man_guy.glb', 1.72],
   ['people/woman_casual.glb', 1.63], ['people/woman_girl.glb', 1.6], ['people/woman_office.glb', 1.66],
 ];
@@ -29,7 +29,7 @@ interface Side {
 /** A vehicle on the road, for judging a gap to cross in. */
 type Mover = { x: number; z: number; vx: number; vz: number };
 
-interface Walker {
+export interface Walker {
   on: boolean;
   side: Side;
   /** where along the pavement they have got to: which segment of the side, how far along it, and which way they walk */
@@ -53,8 +53,12 @@ interface Walker {
   /**
    * walk: along the pavement. idle: stopped a while (a shop window, a phone). wait: at the kerb for a gap in the
    * traffic. cross: over the road to the pavement opposite. down: knocked down by a car, flat until `timer` runs out.
+   * flee: running from trouble at (tx, tz) until `timer` runs out. taken: in a fight or knocked off their feet, and
+   * for as long as that lasts someone else's to move and draw (character/combat.ts).
    */
-  state: 'walk' | 'down' | 'idle' | 'wait' | 'cross';
+  state: 'walk' | 'down' | 'idle' | 'wait' | 'cross' | 'flee' | 'taken';
+  /** 0 to 1: the timid run from a fight, most stop and look, the bold hit back or join in */
+  nerve: number;
   timer: number;
   /** seconds until they next make up their mind what to do */
   decide: number;
@@ -79,7 +83,7 @@ const LOOK = 2.5;
 const QUERY_GROUPS = (0x0020 << 16) | (0xffff & ~0x0002);
 
 /** Walk cycle frame k: legs and arms swinging in opposite pairs, the knee folding as the foot comes through. */
-function walkPose(k: number): Pose {
+export function walkPose(k: number): Pose {
   const a = (k / FRAMES) * Math.PI * 2;
   const leg = (phase: number): [V3, V3] => {
     const swing = Math.sin(phase) * 0.42;
@@ -154,6 +158,10 @@ export class Pedestrians {
   private walkers: Walker[] = [];
   /** per figure, its walk cycle's frames */
   private frames: Instances[][] = [];
+  /** per figure, the file it came from and how tall it stands */
+  private kinds: [string, number][] = [];
+  /** asked when the player's car runs someone down at (vx, vz) m/s: true if they are taken to be thrown for real */
+  onStruck?: (w: Walker, vx: number, vz: number) => boolean;
   private ready = false;
   private started = false;
   private m = new THREE.Matrix4();
@@ -174,7 +182,7 @@ export class Pedestrians {
     for (let i = 0; i < count; i++) {
       this.walkers.push({
         on: false, side: { pts: [], width: 0 }, seg: 0, decide: 0, tx: 0, tz: 0, hurry: 0, t: 0, dir: 1, speed: 1.3, lane: 0, x: 0, z: 0, vx: 0, vz: 0, yaw: 0, phase: 0, scale: 1, figure: 0,
-        state: 'walk', timer: 0, vy: 0, y: 0,
+        state: 'walk', timer: 0, vy: 0, y: 0, nerve: 0.5,
       });
     }
     if (!count) return;
@@ -184,6 +192,7 @@ export class Pedestrians {
       return null;
     }))).then((cycles) => {
       this.frames = cycles.filter((c): c is Instances[] => !!c);
+      this.kinds = FIGURES.filter((_, i) => cycles[i]);
       this.ready = this.frames.length > 0;
     });
   }
@@ -246,6 +255,10 @@ export class Pedestrians {
   private struck(w: Walker, px: number, pz: number, vx: number, vz: number) {
     const speed = Math.hypot(vx, vz);
     if (speed <= 2.5 || Math.hypot(w.x - px, w.z - pz) >= 1.3) return 0;
+    if (this.onStruck?.(w, vx, vz)) {
+      w.state = 'taken';
+      return speed;
+    }
     const cfx = vx / speed, cfz = vz / speed, across = (w.x - px) * cfz - (w.z - pz) * cfx;
     Object.assign(w, { state: 'down', timer: 3.5, vx: vx * 0.7 + (across > 0 ? cfz : -cfz) * 1.5, vz: vz * 0.7 + (across > 0 ? -cfx : cfx) * 1.5, vy: Math.min(6, speed * 0.35) });
     return speed;
@@ -268,8 +281,86 @@ export class Pedestrians {
     Object.assign(w, {
       on: true, side, seg: at.seg, t: at.t, dir, speed, lane, x, z, vx: at.fx * speed, vz: at.fz * speed, yaw: Math.atan2(at.fx, at.fz),
       phase: Math.random(), scale: 0.95 + Math.random() * 0.1, figure: Math.floor(Math.random() * this.frames.length), state: 'walk', timer: 0, y: 0, vy: 0,
-      decide: 3 + Math.random() * 15, hurry: 0,
+      decide: 3 + Math.random() * 15, hurry: 0, nerve: Math.random(),
     });
+  }
+
+  /** Puts `w` back on the pavement nearest to where they stand, walking; nowhere near one, they are gone. */
+  private attach(w: Walker) {
+    let best: Side | null = null, seg = 0, d = Infinity;
+    const bx = Math.floor(w.x / BUCKET), bz = Math.floor(w.z / BUCKET);
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+      for (const n of this.buckets.get(`${bx + i},${bz + j}`) ?? []) {
+        const pts = this.sides[n].pts;
+        for (let k = 0; k < pts.length; k += 2) {
+          const dk = Math.hypot(pts[k] - w.x, pts[k + 1] - w.z);
+          if (dk < d) [best, seg, d] = [this.sides[n], k / 2, dk];
+        }
+      }
+    }
+    if (!best) {
+      w.on = false;
+      return;
+    }
+    Object.assign(w, { state: 'walk', side: best, seg: Math.min(seg, best.pts.length / 2 - 2), t: 0, dir: Math.random() < 0.5 ? 1 : -1, decide: 8 + Math.random() * 12, hurry: 0, y: 0, vy: 0 });
+  }
+
+  /** The figure file `w` is drawn from, and how tall they stand. */
+  kindOf(w: Walker): [string, number] {
+    const [file, height] = this.kinds[w.figure];
+    return [file, height * w.scale];
+  }
+
+  /** Whoever a fist or a stick `r` metres across lands on at (x, y, z), or null. */
+  strikeAt(x: number, y: number, z: number, r: number): Walker | null {
+    let best: Walker | null = null, d = RADIUS + r;
+    for (const w of this.walkers) {
+      if (!w.on || w.state === 'taken' || w.state === 'down' || y < 0 || y > 1.85 * w.scale) continue;
+      const dw = Math.hypot(w.x - x, w.z - z);
+      if (dw < d) [best, d] = [w, dw];
+    }
+    return best;
+  }
+
+  /** `w` is in a fight or off their feet: left alone here until given back. */
+  take(w: Walker) {
+    w.state = 'taken';
+  }
+
+  /** `w` is handed back at (x, z): to walk off along the nearest pavement, or first to run from trouble at `from`. */
+  give(w: Walker, x: number, z: number, yaw: number, from?: { x: number; z: number }) {
+    Object.assign(w, { x, z, yaw, vx: 0, vz: 0, y: 0, vy: 0 });
+    if (from) Object.assign(w, { state: 'flee', tx: from.x, tz: from.z, timer: 6 + Math.random() * 4 });
+    else this.attach(w);
+  }
+
+  /** Someone new on foot at (x, z), such as a driver who has got out: joins the crowd if there is room in it. */
+  adopt(file: string, x: number, z: number, yaw: number, from?: { x: number; z: number }) {
+    const w = this.walkers.find((o) => !o.on), figure = this.kinds.findIndex(([f]) => f === file);
+    if (!w || figure < 0) return false;
+    Object.assign(w, { on: true, figure, scale: 1, speed: 1.3, lane: 0.3, phase: 0, nerve: 0.9 });
+    this.give(w, x, z, yaw, from);
+    return true;
+  }
+
+  /** Knocked flat by a blow, the old way: for when there is no body free to fall for real. */
+  knock(w: Walker, vx: number, vz: number) {
+    Object.assign(w, { state: 'down', timer: 3.5, vx, vz, vy: 1.5 });
+  }
+
+  /**
+   * A fight has broken out at (x, z). Everyone within `r` metres takes it as they are made: the timid run, most stop
+   * and look, and the boldest are offered to `join` (which says whether it took them).
+   */
+  scare(x: number, z: number, r: number, join: (w: Walker) => boolean) {
+    for (const w of this.walkers) {
+      if (!w.on || w.state === 'taken' || w.state === 'down' || w.state === 'flee') continue;
+      const d = Math.hypot(w.x - x, w.z - z);
+      if (d > r) continue;
+      if (w.nerve > 0.85 && join(w)) continue;
+      if (w.nerve < 0.45 || d < 2.5) Object.assign(w, { state: 'flee', tx: x, tz: z, timer: 5 + Math.random() * 5 });
+      else if (w.state === 'walk' || w.state === 'idle') Object.assign(w, { state: 'idle', timer: 4 + Math.random() * 5, vx: 0, vz: 0, yaw: Math.atan2(x - w.x, z - w.z) });
+    }
   }
 
   private segLength(side: Side, seg: number) {
@@ -297,8 +388,9 @@ export class Pedestrians {
   }
 
   /**
-   * Every frame. (px, pz) and (vx, vz) are the player's car and its velocity. Returns how hard the car hit
-   * anyone this frame (m/s), 0 if it hit no one.
+   * Every frame. (px, pz) and (vx, vz) are the player's car and its velocity; (ox, oz) is where the player is,
+   * which is somewhere else when they are out of the car. Returns how hard the car hit anyone this frame (m/s),
+   * 0 if it hit no one.
    *
    * Each walker is a point with a velocity, pushed by forces (Helbing's social force model): a pull towards
    * the pace and line they want, pushes off the people round them (stronger from those ahead, and to their
@@ -306,19 +398,20 @@ export class Pedestrians {
    * nearest (a tree, a post, a wall, a parked car), and a jump out of the way of a car bearing down on them.
    * On top of the forces, nobody may stand inside anybody else, or inside a solid.
    */
-  update(dt: number, px: number, pz: number, vx: number, vz: number): number {
+  update(dt: number, px: number, pz: number, vx: number, vz: number, ox = px, oz = pz): number {
     if (!this.ready || !this.sides.length) return 0;
     dt = Math.min(dt, 0.05);
     const speed = Math.hypot(vx, vz), cfx = vx / (speed || 1), cfz = vz / (speed || 1);
     let hit = 0;
-    const live = this.walkers.filter((w) => w.on);
+    const live = this.walkers.filter((w) => w.on && w.state !== 'taken');
     for (const w of this.walkers) {
+      if (w.state === 'taken' && w.on) continue;
       if (!w.on) {
         // the first crowd appears all round the player; after that, out of sight
-        this.spawn(w, px, pz, this.started ? 35 : 10);
+        this.spawn(w, ox, oz, this.started ? 35 : 10);
         continue;
       }
-      if (Math.hypot(w.x - px, w.z - pz) > DRAWN + 20) {
+      if (Math.hypot(w.x - ox, w.z - oz) > DRAWN + 20) {
         w.on = false;
         continue;
       }
@@ -334,6 +427,38 @@ export class Pedestrians {
           w.vz *= Math.max(0, 1 - 4 * dt);
         }
         if (w.timer <= 0) Object.assign(w, { state: 'walk', y: 0, vx: 0, vz: 0 });
+        continue;
+      }
+
+      if (w.state === 'flee') {
+        const struck = this.struck(w, px, pz, vx, vz);
+        if (struck) {
+          hit = Math.max(hit, struck);
+          continue;
+        }
+        // straight away from the trouble, as fast as they can go, sliding along whatever is in the way
+        const dx = w.x - w.tx, dz = w.z - w.tz, d = Math.hypot(dx, dz) || 1, pace = 4.2;
+        w.vx = (dx / d) * pace;
+        w.vz = (dz / d) * pace;
+        const solid = this.world.projectPoint({ x: w.x, y: 0.9, z: w.z }, false, undefined, QUERY_GROUPS);
+        if (solid && !solid.isInside) {
+          let nx = w.x - solid.point.x, nz = w.z - solid.point.z;
+          const gap = Math.hypot(nx, nz);
+          if (gap < 0.6 && gap > 1e-4) {
+            nx /= gap;
+            nz /= gap;
+            const into = w.vx * nx + w.vz * nz;
+            if (into < 0) [w.vx, w.vz] = [w.vx - into * nx, w.vz - into * nz];
+            if (gap < RADIUS) [w.x, w.z] = [w.x + nx * (RADIUS - gap), w.z + nz * (RADIUS - gap)];
+          }
+        }
+        w.x += w.vx * dt;
+        w.z += w.vz * dt;
+        const turn = Math.atan2(Math.sin(Math.atan2(w.vx, w.vz) - w.yaw), Math.cos(Math.atan2(w.vx, w.vz) - w.yaw));
+        w.yaw += Math.max(-8 * dt, Math.min(8 * dt, turn));
+        w.phase = (w.phase + (pace * dt) / (STRIDE * 1.7)) % 1;
+        // far enough, or long enough: back to the nearest pavement and on with the day
+        if ((w.timer -= dt) <= 0 || d > 45) this.attach(w);
         continue;
       }
 
@@ -502,16 +627,16 @@ export class Pedestrians {
     }
 
     this.positions.length = 0;
-    for (const w of live) if (w.on && (w.state === 'walk' || w.state === 'cross')) this.positions.push({ x: w.x, z: w.z });
+    for (const w of live) if (w.on && (w.state === 'walk' || w.state === 'cross' || w.state === 'flee')) this.positions.push({ x: w.x, z: w.z });
     this.started = true;
-    this.draw(px, pz);
+    this.draw(ox, oz);
     return hit;
   }
 
   private draw(px: number, pz: number) {
     const counts = this.frames.map((frames) => frames.map(() => 0));
     for (const w of this.walkers) {
-      if (!w.on || Math.hypot(w.x - px, w.z - pz) > DRAWN) continue;
+      if (!w.on || w.state === 'taken' || Math.hypot(w.x - px, w.z - pz) > DRAWN) continue;
       const f = w.state === 'down' ? 0 : Math.floor(w.phase * FRAMES) % FRAMES;
       const mesh = this.frames[w.figure][f], i = counts[w.figure][f]++;
       this.q.setFromAxisAngle(this.up, w.yaw);

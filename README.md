@@ -21,6 +21,7 @@
 - **Six cameras.** Chase, hood, cockpit, top-down, cinematic and a free drone. Drag to look around and use the wheel to zoom.
 - **GPS.** Open the map (M), click anywhere or pick a landmark, and follow the purple route along the roads. One-way streets are respected.
 - **Sound.** Recorded engine, tyre squeal, crashes and horn. Paste any YouTube video or playlist link into the menu to drive to your own music.
+- **Get out and walk.** Press F to step out of the car. Punch someone on the pavement and they take it as they are made: the timid run, most stop and stare, the bold hit back and their friends wade in. Hit a car in traffic and a short-tempered driver gets out. Blows are sized by how fast the fist was moving, a guard takes most of one, and anyone who takes too many (you included) goes down as a jointed body under real physics, then picks themselves up. Punches come in combinations, kicks and stamps too, and people bleed. Drivers you crash into or hold up get out and come for you, and will drag you out of a car that is standing still. There is a hockey stick on the boot of the car, and the maps show where you left the car.
 - **Knock things over.** Bins, barricades, lamp posts and traffic signals go flying or topple when you hit them. Trees don't move.
 - **Runs anywhere.** WebGPU where the browser has it, WebGL 2 otherwise. Four quality presets, a resolution governor that holds the frame rate, and game controller support.
 - **Saves as you go.** Your place, car, clock and waypoint are kept in the browser.
@@ -36,11 +37,24 @@
 | <kbd>L</kbd> | headlights | <kbd>A</kbd> ✕ | handbrake |
 | <kbd>R</kbd> | back onto the road | <kbd>X</kbd> □ | horn |
 | <kbd>V</kbd> | switch car | <kbd>B</kbd> ○ | back onto the road |
-| <kbd>C</kbd> · <kbd>1</kbd>–<kbd>6</kbd> | next camera · pick one | <kbd>Y</kbd> △ | next camera |
+| <kbd>F</kbd> | get out of the car · get back in | <kbd>Y</kbd> △ | get out · get back in |
+| <kbd>C</kbd> · <kbd>1</kbd>–<kbd>6</kbd> | next camera · pick one | <kbd>R3</kbd> (press the right stick) | next camera |
 | Drag · wheel | look around · zoom | <kbd>LB</kbd> · <kbd>RB</kbd> | switch car · headlights |
 | <kbd>M</kbd> | map and GPS waypoint | D-pad ↑ · ↓ | pause clock · map |
 | <kbd>N</kbd> · <kbd>T</kbd> | day / night · pause the clock | View · Menu | day / night · pause menu |
 | <kbd>Esc</kbd> | pause menu | | |
+
+On foot (the first click hands the mouse to the game; <kbd>Esc</kbd> takes it back):
+
+| Keyboard & mouse | | Controller | |
+|---|---|---|---|
+| <kbd>W A S D</kbd> · <kbd>Shift</kbd> | walk · run | Left stick · <kbd>A</kbd> ✕ | walk · run |
+| Mouse | look around | Right stick | look around |
+| Click · <kbd>J</kbd> | punch (keep pressing: jab, cross, hook, uppercut), or swing the stick | <kbd>RT</kbd> | punch, or swing the stick |
+| <kbd>Q</kbd> · middle click | kick (twice: a roundhouse; at someone down: a stamp) | <kbd>B</kbd> ○ | kick |
+| <kbd>Space</kbd> | duck and step out of the way | <kbd>LB</kbd> | duck and step away |
+| Right click · <kbd>K</kbd> (hold) | guard | <kbd>LT</kbd> | guard |
+| <kbd>E</kbd> | take the hockey stick off the boot · put it back | <kbd>X</kbd> □ | take the stick · put it back |
 
 Browsers only allow game controllers on `https://` or `localhost` pages.
 
@@ -66,6 +80,7 @@ npm run dev:https    # https on your network, so a phone or another PC can use a
 | `?cam=cockpit` | start in a camera view |
 | `?x=…&z=…&h=…` | start anywhere on the map (metres from Connaught Place, heading in degrees) |
 | `?city=mumbai` | drive South Bombay instead of Delhi (each city keeps its own save) |
+| `?fighters=6` | how many people can be fighting or knocked down at once (3 to 8 by preset) |
 | `?fresh` | ignore saved progress |
 | `?gl` | force WebGL 2 instead of WebGPU |
 
@@ -73,6 +88,7 @@ npm run dev:https    # https on your network, so a phone or another PC can use a
 
 - **[three.js](https://threejs.org/)** (WebGPU renderer and TSL node materials) for graphics: cascaded sun shadows, bloom, a physical sky, and street lamps lit from the nearest poles.
 - **[Rapier](https://rapier.rs/)** for physics: sprung ray-cast wheels with the game's own tyre model on top (`src/vehicle/vehicle.ts`), building walls as triangle meshes, and street furniture that sleeps until hit.
+- **On foot** (`src/character/`): whoever is standing is a capsule pushed about by their legs, drawn in hand-written poses eased one into another (the figures' files carry no animation). A blow is an impulse; someone knocked down, or hit by a car, becomes eleven weighted pieces joined at waist, neck, shoulders, elbows, hips and knees until they lie still. A fixed handful of these bodies is made at the start and reused.
 - **Only the vicinity is drawn.** Each 1 km map cell is cut into 200 m chunks; chunks beyond the preset's draw distance are taken out of the scene and haze hides the edge. The pause menu's Graphics tab shows which graphics card the browser is using.
 - **TypeScript + [Vite](https://vite.dev/)**, with no UI framework.
 - **The map** is baked from OpenStreetMap (Overpass) by `tools/bake/bake.mjs` into 1 km cells under `public/tiles/`. South Bombay (`--area mumbai`) is cut from Geofabrik's India extract instead, with [osmium-tool](https://osmcode.org/osmium-tool/): `node tools/bake/bake.mjs --area mumbai --pbf india-latest.osm.pbf`. Its sea is built from the OpenStreetMap coastline. Cells load and unload around the car as you drive; the GPS and the big map use `overview.json`, every road and park in one file.
@@ -83,7 +99,8 @@ src/
   main.ts            game loop, input wiring, menu
   world/             map cells, roads, buildings, trees, lamps, physics, GPS routing
   vehicle/           car specs, physics, models, lights, input
-  camera/            the six camera modes
+  character/         on foot: fighters, their bodies and poses, NPC behaviour, the hockey stick
+  camera/            the six camera modes, and the one over the shoulder on foot
   render/            renderer, post-processing, sky and day/night
   audio/             car sounds and YouTube music
   hud/               speedometer, minimap, big map, menu

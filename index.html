@@ -67,6 +67,23 @@
       #hint.faded { opacity: 0; }
       #hint.warn, #hint.warn.faded { opacity: 1; color: #ffd0a0; border-color: rgba(255, 170, 90, 0.5); }
 
+      /* out of the car: no speedometer; what the player has left in them, and what they can do where they stand */
+      body.on-foot #speedo { display: none; }
+      #health { position: absolute; right: 26px; bottom: 26px; width: 190px; height: 9px; border-radius: 5px; overflow: hidden; background: rgba(0, 0, 0, 0.55); border: 1px solid var(--line); display: none; }
+      body.on-foot #health { display: block; }
+      #health i { display: block; height: 100%; background: #6fd38a; transform-origin: left; transition: transform 0.15s, background 0.3s; }
+      #health i.low { background: #e5584a; }
+      #prompt { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); padding: 7px 14px; font-size: 13px; white-space: nowrap; opacity: 0; transition: opacity 0.15s; }
+      #prompt.show { opacity: 1; }
+      #prompt kbd { font: inherit; font-weight: 700; color: var(--accent); margin-right: 8px; }
+      #car-info { position: absolute; left: 22px; bottom: 252px; padding: 5px 11px; font-size: 12px; font-weight: 600; color: #cfe6ff; opacity: 0; transition: opacity 0.3s; }
+      #car-info.show { opacity: 1; }
+      body:not(:has(#waypoint-info.show)) #car-info { bottom: 222px; }
+      /* hurt: the edges of the screen go red */
+      #hurt { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, rgba(120, 0, 0, 0) 45%, rgba(150, 0, 0, 0.45) 78%, rgba(90, 0, 0, 0.85) 100%); }
+      #fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 0.9s; }
+      #fade.on { opacity: 1; }
+
       /* Esc menu: a tabbed sheet holding everything that is not needed while driving */
       #menu { position: fixed; inset: 0; z-index: 4; display: grid; place-items: center; padding: 16px; background: radial-gradient(ellipse at center, rgba(8, 9, 11, 0.5), rgba(8, 9, 11, 0.86)); backdrop-filter: blur(6px) saturate(0.8); -webkit-backdrop-filter: blur(6px) saturate(0.8); opacity: 0; pointer-events: none; transition: opacity 0.25s; }
       #menu.open { opacity: 1; pointer-events: auto; }
@@ -220,9 +237,15 @@
         <div><span id="gear">N</span><span id="speed">0</span></div>
         <div id="speed-unit">KM/H</div>
       </div>
-      <div id="hint" class="panel"><b>W A S D</b> drive &nbsp;·&nbsp; <b>drag</b> to look &nbsp;·&nbsp; <b>M</b> map &amp; waypoint &nbsp;·&nbsp; <b>Esc</b> / <b>Menu</b> button: controls &amp; info · controllers work too</div>
+      <div id="car-info" class="panel"></div>
+      <div id="health"><i></i></div>
+      <div id="prompt" class="panel"></div>
+      <div id="hint" class="panel"><b>W A S D</b> drive &nbsp;·&nbsp; <b>drag</b> to look &nbsp;·&nbsp; <b>F</b> get out &nbsp;·&nbsp; <b>M</b> map &amp; waypoint &nbsp;·&nbsp; <b>Esc</b> / <b>Menu</b> button: controls &amp; info · controllers work too</div>
       <div id="toast" class="panel"></div>
     </div>
+
+    <div id="hurt"></div>
+    <div id="fade"></div>
 
     <div id="menu" aria-hidden="true">
       <div class="sheet panel" role="dialog" aria-label="Paused">
@@ -293,6 +316,13 @@
                   <kbd>L</kbd><span>headlights</span>
                   <kbd>R</kbd><span>back onto the road</span>
                   <kbd>V</kbd><span>switch car</span>
+                  <kbd>F</kbd><span>get out of the car · get back in</span>
+                  <kbd>W A S D · Shift</kbd><span>on foot: walk · run</span>
+                  <kbd>Click · J</kbd><span>on foot: punch (keep pressing: jab, cross, hook, uppercut), or swing the stick</span>
+                  <kbd>Q · middle click</kbd><span>on foot: kick (twice: roundhouse; at someone down: stamp)</span>
+                  <kbd>Right click · K</kbd><span>on foot: guard (hold)</span>
+                  <kbd>Space</kbd><span>on foot: duck and step away</span>
+                  <kbd>E</kbd><span>on foot: take the hockey stick off the boot · put it back</span>
                   <kbd>C · 1–6</kbd><span>next camera · pick one</span>
                   <kbd>Drag · wheel</kbd><span>look around · zoom</span>
                   <kbd>M</kbd><span>map and GPS waypoint</span>
@@ -310,7 +340,12 @@
                   <kbd>A ✕</kbd><span>handbrake</span>
                   <kbd>X □</kbd><span>horn</span>
                   <kbd>B ○</kbd><span>back onto the road</span>
-                  <kbd>Y △</kbd><span>next camera</span>
+                  <kbd>Y △</kbd><span>get out of the car · get back in</span>
+                  <kbd>R3</kbd><span>next camera (press the right stick)</span>
+                  <kbd>Left stick · A ✕</kbd><span>on foot: walk · run</span>
+                  <kbd>RT · LT</kbd><span>on foot: punch or swing (keep pressing: a combination) · guard</span>
+                  <kbd>B ○ · LB</kbd><span>on foot: kick · duck and step away</span>
+                  <kbd>X □</kbd><span>on foot: take the hockey stick · put it back</span>
                   <kbd>LB · RB</kbd><span>switch car · headlights</span>
                   <kbd>D-pad ↑ ↓</kbd><span>pause clock · map</span>
                   <kbd>View · Menu</kbd><span>day / night · this menu</span>

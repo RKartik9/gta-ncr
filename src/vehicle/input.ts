@@ -1,4 +1,5 @@
 import type { DriveInput } from './vehicle.ts';
+import type { FootInput } from '../character/combat.ts';
 
 const DRIVE_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space']);
 
@@ -7,10 +8,11 @@ const DRIVE_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', '
  * so every action is defined once, in main.ts.
  */
 const PAD_BUTTONS: Record<number, string> = {
-  1: 'KeyR', // B [circle]: back onto the road
-  2: 'KeyH', // X [square]: horn
-  3: 'KeyC', // Y [triangle]: next camera
-  4: 'KeyV', // LB [L1]: switch car
+  1: 'KeyR', // B [circle]: back onto the road; on foot, kick
+  2: 'KeyH', // X [square]: horn; on foot, take or put back the stick
+  3: 'KeyF', // Y [triangle]: out of the car, and back in
+  11: 'KeyC', // right stick pressed [R3]: next camera
+  4: 'KeyV', // LB [L1]: switch car; on foot, duck and step away
   5: 'KeyL', // RB [R1]: headlights
   8: 'KeyN', // View [Share]: day / night
   9: 'Escape', // Menu [Options]: pause menu
@@ -32,6 +34,7 @@ export class Keyboard {
   private padIndex: number | null = null;
   private padWas: boolean[] = [];
   private pad = { throttle: 0, steer: 0, handbrake: false };
+  private rtWas = false;
   /** right stick, -1..1, for looking round */
   look = { x: 0, y: 0 };
   /** left stick and triggers as they are, for the map */
@@ -49,6 +52,15 @@ export class Keyboard {
       this.down.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.down.delete(e.code));
+    // On foot the mouse is held by the game (see CameraDirector): its buttons are then keys like any other, 'Mouse0' and 'Mouse2'.
+    window.addEventListener('mousedown', (e) => {
+      if (!document.pointerLockElement) return;
+      e.preventDefault(); // a middle click is a kick, not the browser's autoscroll
+      this.down.add(`Mouse${e.button}`);
+      this.handlers.get(`Mouse${e.button}`)?.();
+    });
+    window.addEventListener('mouseup', (e) => this.down.delete(`Mouse${e.button}`));
+    window.addEventListener('contextmenu', (e) => document.pointerLockElement && e.preventDefault());
     // A key released while the tab is in the background would otherwise stay "held".
     window.addEventListener('blur', () => this.down.clear());
     window.addEventListener('gamepadconnected', (e) => this.adopt(e.gamepad));
@@ -127,6 +139,10 @@ export class Keyboard {
     this.pad.throttle = trigger(RT) - trigger(LT);
     this.pad.steer = -stick(gp.axes[0] ?? 0) || dpad(14) - dpad(15);
     this.pad.handbrake = !!b(HANDBRAKE)?.pressed;
+    // the right trigger pulled is also a blow struck, on foot
+    const rt = trigger(RT) > 0.5;
+    if (rt && !this.rtWas) this.handlers.get('Mouse0')?.();
+    this.rtWas = rt;
     this.raw = { x: stick(gp.axes[0] ?? 0), y: stick(gp.axes[1] ?? 0), rt: trigger(RT), lt: trigger(LT) };
     // only on the standard layout: elsewhere axes 2 and 3 are often the triggers, and the view swung with the throttle
     const std = gp.mapping === 'standard';
@@ -139,6 +155,19 @@ export class Keyboard {
     if (this.padIndex === null) return;
     const gp = navigator.getGamepads()[this.padIndex];
     void gp?.vibrationActuator?.playEffect('dual-rumble', { duration: ms, strongMagnitude: Math.min(1, strength), weakMagnitude: Math.min(1, strength * 0.6) }).catch(() => {});
+  }
+
+  /** On foot: which way the player pushes (the left stick, or W A S D), whether they run, and whether their guard is up. */
+  foot(): FootInput {
+    const d = this.down;
+    const held = (a: string, b: string) => (d.has(a) || d.has(b) ? 1 : 0);
+    const stronger = (a: number, b: number) => (Math.abs(a) >= Math.abs(b) ? a : b);
+    return {
+      x: stronger(held('ArrowRight', 'KeyD') - held('ArrowLeft', 'KeyA'), this.raw.x),
+      y: stronger(held('ArrowUp', 'KeyW') - held('ArrowDown', 'KeyS'), -this.raw.y),
+      sprint: !!held('ShiftLeft', 'ShiftRight') || this.pad.handbrake,
+      block: !!held('KeyK', 'Mouse2') || this.raw.lt > 0.3,
+    };
   }
 
   drive(): DriveInput {

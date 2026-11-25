@@ -71,6 +71,27 @@ function drawMap(tile: Tile): MapPiece {
 
 /** The GPS colour, as in the classic open-world games. */
 export const ROUTE_COLOUR = '#b84dff';
+/** the colour of the marker on the maps for the car left behind */
+export const CAR_COLOUR = '#3fa2ff';
+
+/** The car left behind, as a marker: a little car from above, nose up at `turn` 0, centred on the current origin. */
+export function drawCarMarker(g: CanvasRenderingContext2D, turn: number, size = 1) {
+  g.save();
+  g.rotate(turn);
+  g.scale(size, size);
+  g.beginPath();
+  g.roundRect(-7, -12, 14, 24, 4);
+  g.fillStyle = CAR_COLOUR;
+  g.strokeStyle = '#fff';
+  g.lineWidth = 2.5;
+  g.stroke();
+  g.fill();
+  // the windscreen and the back window, so it reads as a car and shows which way it faces
+  g.fillStyle = '#0d2a44';
+  g.fillRect(-5, -7, 10, 4);
+  g.fillRect(-5, 5, 10, 3);
+  g.restore();
+}
 
 export class Hud {
   private speed = $('speed');
@@ -168,6 +189,66 @@ export class Hud {
     this.credit.textContent = `Map data ${this.attribution}. ${credit ? `Car model: ${credit}. ` : ''}Engine sound: "Car Engine Loop" by qubodup (opengameart.org), CC BY 3.0. Other sounds CC0 from freesound.org.`;
   }
 
+  /** Out of the car: no speedometer, and how much the player has left in them instead. */
+  setOnFoot(on: boolean) {
+    document.body.classList.toggle('on-foot', on);
+  }
+
+  private health = $('health').firstElementChild as HTMLElement;
+  private healthShown = -1;
+  /** 0 to 1 */
+  setHealth(share: number) {
+    const shown = Math.round(share * 100);
+    if (shown === this.healthShown) return;
+    this.healthShown = shown;
+    this.health.style.transform = `scaleX(${shown / 100})`;
+    this.health.classList.toggle('low', shown < 30);
+  }
+
+  private hurtShown = 0;
+  private hurtFlash = 0;
+  private hurtEl = $('hurt');
+  /** The player has been hurt (0 to 1): the edges of the screen flash red. */
+  flash(amount: number) {
+    this.hurtFlash = Math.max(this.hurtFlash, amount);
+  }
+
+  /** Every frame on foot: the red at the edges, a flash fading and a glow that stays while badly hurt. */
+  setHurt(dt: number, health: number) {
+    this.hurtFlash = Math.max(0, this.hurtFlash - dt * 1.6);
+    const level = Math.min(1, Math.max(this.hurtFlash, (0.45 - health) * 1.6));
+    if (Math.abs(level - this.hurtShown) < 0.01) return;
+    this.hurtShown = level;
+    this.hurtEl.style.opacity = String(level);
+  }
+
+  private carInfo = $('car-info');
+  private carShown = -1;
+  /** How far the car is, under the minimap; null when the player is in it. */
+  setCarDistance(metres: number | null) {
+    const shown = metres === null ? -1 : Math.round(metres);
+    if (shown === this.carShown) return;
+    this.carShown = shown;
+    this.carInfo.classList.toggle('show', metres !== null);
+    if (metres !== null) this.carInfo.textContent = `Your car · ${metres < 1000 ? `${shown} m` : `${(metres / 1000).toFixed(1)} km`}`;
+  }
+
+  private prompt = $('prompt');
+  private promptShown = '';
+  /** What the player can do where they stand, as "key|what it does"; '' for nothing. */
+  setPrompt(text: string) {
+    if (text === this.promptShown) return;
+    this.promptShown = text;
+    const [key, what] = text.split('|');
+    this.prompt.classList.toggle('show', !!text);
+    if (text) this.prompt.innerHTML = `<kbd>${key}</kbd>${what}`;
+  }
+
+  /** The screen goes dark (knocked out), and comes back. */
+  fade(on: boolean) {
+    $('fade').classList.toggle('on', on);
+  }
+
   private region = $('region');
   setRegion(name: string) {
     const text = name === REGION ? REGION : `${name} · ${REGION}`;
@@ -207,7 +288,8 @@ export class Hud {
     if (metres !== null) this.waypointInfo.textContent = `◆ Waypoint · ${metres < 1000 ? `${Math.round(metres / 10) * 10} m` : `${(metres / 1000).toFixed(1)} km`}`;
   }
 
-  update(speed: number, x: number, z: number, heading: number, route: number[] | null = null, waypoint: [number, number] | null = null) {
+  /** `car` is where the car was left, when the player is out of it. */
+  update(speed: number, x: number, z: number, heading: number, route: number[] | null = null, waypoint: [number, number] | null = null, car: { x: number; z: number; heading: number } | null = null) {
     const kmh = Math.abs(speed) * 3.6;
     this.speed.textContent = String(Math.round(kmh));
     this.gear.textContent = kmh < 1 ? 'N' : speed < 0 ? 'R' : 'D';
@@ -260,6 +342,18 @@ export class Hud {
       g.lineWidth = 3;
       g.stroke();
       g.fill();
+    }
+    if (car) {
+      // the car left behind: on the rim, pointing the way, when it is off the minimap
+      const a = heading - Math.PI, dx = (car.x - x) * scale, dz = (car.z - z) * scale;
+      let px = size / 2 + dx * Math.cos(a) - dz * Math.sin(a), pz = size * 0.6 + dx * Math.sin(a) + dz * Math.cos(a);
+      const ox = px - size / 2, oz = pz - size / 2, r = Math.hypot(ox, oz), rim = size / 2 - 18;
+      if (r > rim) {
+        px = size / 2 + (ox / r) * rim;
+        pz = size / 2 + (oz / r) * rim;
+      }
+      g.setTransform(1, 0, 0, 1, px, pz);
+      drawCarMarker(g, heading - car.heading, 1.1);
     }
     g.setTransform(1, 0, 0, 1, size / 2, size * 0.6);
     g.beginPath();

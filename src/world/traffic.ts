@@ -72,6 +72,8 @@ interface Car {
   /** knocked off its line by a crash: no longer driven, just a body the physics throws about */
   wrecked: boolean;
   wreckTime: number;
+  /** its driver has got out to have it out with the player */
+  empty: boolean;
   /** the velocity it was last told to drive at: anything else after a step is something having hit it */
   vx: number;
   vz: number;
@@ -147,6 +149,11 @@ export class Traffic {
   readonly positions: { x: number; z: number; vx: number; vz: number }[] = [];
   /** a driver sounds the horn at (x, z): a quick tap, two taps, or leaning on it; `pitch` is that car's horn */
   onHonk?: (x: number, z: number, kind: 'tap' | 'double' | 'long', pitch: number) => void;
+  /**
+   * A vehicle has been knocked off its line, or hit by someone on foot. `near`: the player had a hand in it. `leave` is for whoever wants its driver out
+   * on the street: true if there is still a driver in it to get out, and from then on there is not.
+   */
+  onWreck?: (car: { body: RAPIER.RigidBody; aggression: number; width: number; near: boolean; leave: () => boolean }) => void;
   private time = 0;
   private lampTimer = 0;
   private cars: Car[] = [];
@@ -209,7 +216,7 @@ export class Traffic {
       );
       body.setEnabled(false);
       shells.get(kind)!.setColorAt(slot, new THREE.Color(kind.colours[Math.floor(Math.random() * kind.colours.length)]));
-      this.cars.push({ on: false, edge: 0, next: -1, s: 0, lane: 0, speed: 0, cruise: 1, aggression: 0, headway: 1.4, accel: 1.8, react: 0, laneTimer: 0, honk: 0, wait: 0, hurry: 0, brake: false, signal: 0, hornPitch: 1, honks: 0, spinY: 0, x: 0, z: 0, ox: 0, oz: 0, yaw: 0, spin: 0, stuck: 0, red: false, claim: -1, wrecked: false, wreckTime: 0, vx: 0, vz: 0, kind, slot, body, collider });
+      this.cars.push({ on: false, edge: 0, next: -1, s: 0, lane: 0, speed: 0, cruise: 1, aggression: 0, headway: 1.4, accel: 1.8, react: 0, laneTimer: 0, honk: 0, wait: 0, hurry: 0, brake: false, signal: 0, hornPitch: 1, honks: 0, spinY: 0, x: 0, z: 0, ox: 0, oz: 0, yaw: 0, spin: 0, stuck: 0, red: false, claim: -1, wrecked: false, wreckTime: 0, empty: false, vx: 0, vz: 0, kind, slot, body, collider });
     });
   }
 
@@ -351,6 +358,7 @@ export class Traffic {
     car.claim = -1;
     car.wrecked = false;
     car.wreckTime = 0;
+    car.empty = false;
     car.on = true;
     car.collider.setFriction(0);
     car.collider.setCollisionGroups(TRAFFIC_GROUPS);
@@ -368,6 +376,37 @@ export class Traffic {
     car.on = false;
     this.release(car);
     car.body.setEnabled(false);
+  }
+
+  /** Knocked off its line: hazards on, and from here on only a body. Its driver may have something to say about it. */
+  private wreck(car: Car, near: boolean) {
+    car.wrecked = true;
+    car.signal = 3; // hazards on
+    car.brake = false;
+    car.collider.setFriction(0.8);
+    car.collider.setCollisionGroups(WRECK_GROUPS);
+    this.release(car);
+    this.onWreck?.({
+      body: car.body, aggression: car.aggression, width: car.kind.width, near,
+      leave: () => car.on && car.wrecked && !car.empty && (car.empty = true),
+    });
+  }
+
+  /**
+   * Someone on foot has hit the vehicle whose body this is. A patient driver leans on the horn and drives on;
+   * an impatient one stops where they are. False if it is not one of the traffic's.
+   */
+  provoke(body: RAPIER.RigidBody) {
+    const car = this.cars.find((c) => c.on && c.body.handle === body.handle);
+    if (!car) return false;
+    if (car.wrecked) {
+      if (!car.empty) this.onWreck?.({ body: car.body, aggression: car.aggression, width: car.kind.width, near: true, leave: () => car.on && !car.empty && (car.empty = true) });
+    } else if (car.aggression > 0.3) this.wreck(car, true);
+    else {
+      this.onHonk?.(car.x, car.z, 'long', car.hornPitch);
+      car.hurry = 4;
+    }
+    return true;
   }
 
   private release(car: Car) {
@@ -392,12 +431,7 @@ export class Traffic {
       const touching = toPlayer < car.kind.length / 2 + PLAYER_LENGTH / 2 + 1;
       const knocked = Math.hypot(lv.x - car.vx, lv.z - car.vz), spun = Math.abs(car.body.angvel().y - car.spinY);
       if (!car.wrecked && (knocked > (touching ? 0.8 : 2.5) || (touching && spun > 0.4) || 1 - 2 * (r.x * r.x + r.z * r.z) < 0.9)) {
-        car.wrecked = true;
-        car.signal = 3; // hazards on
-        car.brake = false;
-        car.collider.setFriction(0.8);
-        car.collider.setCollisionGroups(WRECK_GROUPS);
-        this.release(car);
+        this.wreck(car, touching);
       }
       if (car.wrecked) {
         car.x = t.x;
@@ -499,6 +533,11 @@ export class Traffic {
       car.honk -= dt;
       car.wait = byPlayer && car.speed < 1.5 ? car.wait + dt : Math.max(0, car.wait - 2 * dt);
       if (car.wait === 0) car.honks = 0;
+      // leaned on the horn and still held up: the hot-headed get out to move the player themselves
+      if (byPlayer && car.wait > 9 && car.aggression > 0.55 && car.speed < 0.5) {
+        this.wreck(car, true);
+        continue;
+      }
       if (car.honk <= 0 && car.wait > 2 + (1 - car.aggression) * 5 && car.honks < 1 + Math.round(car.aggression * 2)) {
         this.onHonk?.(car.x, car.z, car.honks === 0 ? 'tap' : car.honks === 1 ? 'double' : 'long', car.hornPitch);
         car.honks++;

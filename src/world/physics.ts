@@ -16,6 +16,13 @@ export const TYRE_GROUPS = (0x0004 << 16) | (0xffff & ~0x0002);
 export const WALL_GROUPS = (0x0008 << 16) | 0xffff;
 export const TRAFFIC_GROUPS = (0x0010 << 16) | (0xffff & ~0x0008);
 export const WRECK_GROUPS = (0x0010 << 16) | 0xffff;
+/** Someone on their feet: the player out of the car, and whoever is fighting. Solid to everything. */
+export const FIGHTER_GROUPS = (0x0040 << 16) | 0xffff;
+/** The limbs of someone knocked down. They lie under the feet of those still standing, and pass through other fallen bodies
+ * (and their own: the joints' limits keep the limbs apart). */
+export const RAGDOLL_GROUPS = (0x0080 << 16) | (0xffff & ~0x0040 & ~0x0080);
+/** What a fist or a stick can land on: everything but the road. */
+export const STRIKE_GROUPS = (0x0100 << 16) | (0xffff & ~0x0002);
 
 /** The ground and the fence round the edge of the map; everything else arrives cell by cell with `addProps`. */
 export async function createPhysics(bounds: Tile['bounds']) {

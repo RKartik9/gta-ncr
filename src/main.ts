@@ -27,6 +27,7 @@ import { CAMERA_MODES, CameraDirector, type CameraMode } from './camera/director
 import { Hud, chooseStart, hideLoading, setLoading } from './hud/hud.ts';
 import { Sound } from './audio/sound.ts';
 import { Music } from './audio/music.ts';
+import { type CarRef, Combat } from './character/combat.ts';
 
 const RESUME = 'delhi-drive:resume';
 
@@ -96,6 +97,16 @@ async function boot() {
   const tyreFx = new TyreFx(scene, quality.name === 'low' ? 80 : 160);
   // Bombay's pavements are far busier than Delhi's
   const pedestrians = new Pedestrians(scene, world, Math.round(quality.pedestrians * (CITY === 'mumbai' ? 1.8 : 1)));
+  // everything on foot: getting out of the car, the fights, the stick on the boot
+  const combat = new Combat(scene, world, pedestrians, traffic, quality.fighters, {
+    sound: (kind, strength, distance, voice) => sound.thump(kind, strength, distance, voice),
+    shake: (amount) => director.shake(amount),
+    hurt: (amount) => hud.flash(amount),
+    pulledOut: () => setFoot(true),
+    say: (text) => hud.say(text),
+    rumble: (strength, ms) => keys.rumble(strength, ms),
+    fade: (on) => hud.fade(on),
+  });
   const streamer = new Streamer(grid, area, all.roads, scene, world, quality.treeDensity, quality.drawDistance, quality.detailDistance);
   let booting = true, built = 0;
   streamer.onChange = (added, removed) => {
@@ -148,10 +159,29 @@ async function boot() {
   let vehicle = new Vehicle(world, model.spec, start.x, start.z, start.heading, deckHeight(streamer.tiles, start.x, start.z));
   scene.add(model.group);
   hud.setCar(model.spec.name, model.spec.credit ?? '');
+  /** The car as the people on foot know it: where its doors and its boot are, and the road it stands on. */
+  const carRef = (): CarRef => {
+    const v = vehicle, m = model;
+    return {
+      group: m.group, spec: m.spec, body: v.body, bike: !!m.lean,
+      get ground() {
+        return Math.max(0, v.body.translation().y - rideHeight(m.spec) - 0.02);
+      },
+      get heading() {
+        return v.heading;
+      },
+    };
+  };
+  combat.setCar(carRef());
 
   let switching = false;
   async function switchCar() {
     if (switching) return;
+    if (combat.onFoot) {
+      // on foot the same button ducks out of the way
+      combat.dodge(keys.foot(), director.facing);
+      return;
+    }
     switching = true;
     const next = (carIndex + 1) % CARS.length;
     // Say so straight away: the model may still be loading, and its shaders are readied before the swap, so the
@@ -168,6 +198,7 @@ async function boot() {
     carIndex = next;
     model = incoming;
     vehicle = new Vehicle(world, model.spec, p.x, p.z, heading, ground);
+    combat.setCar(carRef());
     tyreFx.reset();
     scene.add(model.group);
     carLamps.attach(model);
@@ -203,6 +234,7 @@ async function boot() {
   setCamera(wanted && CAMERA_MODES.includes(wanted) ? wanted : 'chase');
 
   function resetCar() {
+    if (combat.onFoot) return;
     const p = vehicle.body.translation();
     const hit = nearestRoad(streamer.tiles, p.x, p.z, (r) => isStreet(r) && !r.elev) ?? nearestRoad(streamer.tiles, p.x, p.z, (r) => !r.elev);
     if (!hit) return;
@@ -223,16 +255,40 @@ async function boot() {
 
   const keys = new Keyboard();
   keys.on('KeyC', () => {
+    if (combat.onFoot) return;
     director.next();
     hud.setCamera(director.mode);
   });
-  CAMERA_MODES.forEach((mode, i) => keys.on(`Digit${i + 1}`, () => setCamera(mode)));
+  CAMERA_MODES.forEach((mode, i) => keys.on(`Digit${i + 1}`, () => !combat.onFoot && setCamera(mode)));
+  // Out of the car and back in. On foot the camera goes over the player's shoulder and the mouse is theirs to look and hit with.
+  const setFoot = (on: boolean) => {
+    director.setOnFoot(on, vehicle.heading);
+    hud.setOnFoot(on);
+  };
+  keys.on('KeyF', () => {
+    if (hud.menuOpen || bigmap.open) return;
+    if (combat.onFoot) {
+      if (combat.enter()) setFoot(false);
+    } else if (Math.abs(vehicle.speed) > 2) hud.say('Stop first');
+    else if (combat.exit()) setFoot(true);
+  });
+  keys.on('KeyE', () => combat.interact());
+  keys.on('KeyJ', () => combat.attack());
+  keys.on('KeyQ', () => combat.kick());
+  keys.on('Mouse1', () => combat.kick());
+  keys.on('Space', () => combat.dodge(keys.foot(), director.facing));
+  keys.on('Mouse0', () => !hud.menuOpen && !bigmap.open && combat.attack());
+  // Esc gives the mouse back (the browser sees to that), and the game pauses as it does for Esc at the wheel.
+  document.addEventListener('pointerlockchange', () => {
+    if (!document.pointerLockElement && combat.onFoot && !hud.menuOpen && !bigmap.open) hud.toggleMenu(true);
+  });
   keys.on('KeyV', () => void switchCar());
   // GPS: the big map (M) sets a waypoint; the route is worked out over every road once the overview is in.
   const gps = new Gps(scene);
   if (saved?.waypoint) gps.waypoint = saved.waypoint; // routed as soon as the road graph is in
   const bigmap = new BigMap(grid);
-  const carPos = () => model.group.position;
+  /** where the player is: at the wheel, or wherever they have walked to */
+  const carPos = () => (combat.onFoot ? combat.player.pos : model.group.position);
   bigmap.onWaypoint = (p) => {
     gps.set(p, carPos());
     hud.say(p ? (gps.ready ? 'Waypoint set' : 'Waypoint set: working out the route…') : 'Waypoint cleared');
@@ -242,17 +298,19 @@ async function boot() {
   pedestrians.setRoads(all.roads.filter(hasPavement));
   traffic.walkers = pedestrians.positions;
   pedestrians.vehicles = traffic.positions;
-  traffic.onHonk = (x, z, kind, pitch) => sound.honk(Math.hypot(x - model.group.position.x, z - model.group.position.z), kind, pitch);
+  traffic.onHonk = (x, z, kind, pitch) => sound.honk(Math.hypot(x - carPos().x, z - carPos().z), kind, pitch);
   bigmap.setTiles([all]);
   const toggleMap = (open = !bigmap.open) => {
     if (open) hud.toggleMenu(false);
     bigmap.toggle(open, carPos());
+    if (open && document.pointerLockElement) document.exitPointerLock();
   };
   keys.on('KeyM', () => toggleMap());
   // on the map, the controller's face buttons work the waypoint instead of the car
   keys.on('PadA', () => bigmap.open && bigmap.pickCentre());
-  keys.on('KeyR', () => (bigmap.open ? toggleMap(false) : resetCar()));
-  keys.on('KeyH', () => bigmap.open && bigmap.onWaypoint(null)); // held: the horn, read each frame
+  keys.on('KeyR', () => (bigmap.open ? toggleMap(false) : combat.onFoot ? combat.kick() : resetCar()));
+  // held: the horn, read each frame. On foot it is the controller's X, which takes the stick and puts it back.
+  keys.on('KeyH', () => (bigmap.open ? bigmap.onWaypoint(null) : combat.interact()));
   keys.on('KeyN', () => {
     daynight.toggle();
     headlights = null;
@@ -311,6 +369,10 @@ async function boot() {
   let lag = 0;
   /** the last place the car stood on land or road, where it is held if it runs into the water */
   const dry = new THREE.Vector2(start.x, start.z);
+  /** the same for the player on foot */
+  const dryFoot = new THREE.Vector3(start.x, 0, start.z);
+  /** the car while the player is out of it: left where it stands with the handbrake on */
+  const PARKED = { throttle: 0, steer: 0, handbrake: true };
   let roadTimer = 0;
   let firstFrame = true;
   let wasHonking = false;
@@ -472,15 +534,19 @@ async function boot() {
     const paused = hud.menuOpen || bigmap.open;
     lag += paused ? 0 : dt; // the Esc menu and the map pause the game
     if (bigmap.open) bigmap.steer(dt, keys.raw.x, keys.raw.y, keys.raw.rt, keys.raw.lt);
-    const input = keys.drive();
+    const foot = combat.onFoot;
+    const input = foot ? PARKED : keys.drive();
     let steps = 0;
     while (lag >= STEP && steps < 5) {
       previous.p.copy(current.p);
       previous.q.copy(current.q);
       vehicle.update(input, STEP);
-      const pv = vehicle.body.linvel();
-      traffic.step(STEP, current.p.x, current.p.z, pv.x, pv.z);
+      // the traffic keeps clear of the player, wherever they are
+      const pv = foot ? combat.velocity : vehicle.body.linvel(), at = foot ? combat.player.pos : current.p;
+      traffic.step(STEP, at.x, at.z, pv.x, pv.z);
+      combat.step(STEP);
       stepWorld(world);
+      combat.afterStep();
       readPose(current);
       // the sea is not a road: a car that runs off the land (or off the Sea Link) is stopped at the water's edge
       if (offRoadInWater(streamer.tiles, current.p.x, current.p.z)) {
@@ -493,6 +559,12 @@ async function boot() {
       steps++;
     }
     if (steps === 5) lag = 0;
+    if (foot) {
+      // nobody walks into the sea either
+      const p = combat.player.pos;
+      if (offRoadInWater(streamer.tiles, p.x, p.z)) combat.putPlayer(dryFoot.x, dryFoot.y, dryFoot.z);
+      else if (combat.player.standing) dryFoot.copy(p);
+    }
     // a sudden loss of speed is a hit: shake the controller in proportion
     const jolt = Math.abs(vehicle.speed - speedBefore);
     if (steps && jolt > 2.5) {
@@ -500,7 +572,7 @@ async function boot() {
       sound.crash(jolt);
     }
     sound.setPaused(paused);
-    const honking = !bigmap.open && keys.held('KeyH');
+    const honking = !bigmap.open && !foot && keys.held('KeyH');
     sound.setHorn(honking);
     if (honking && !wasHonking) {
       // the car in front makes way, people in the road hurry out of it
@@ -511,13 +583,13 @@ async function boot() {
     wasHonking = honking;
     // tyres at their limit come through the controller as a light buzz, the anti-lock as a harder one
     if (steps && (vehicle.skid > 0.2 || vehicle.abs)) keys.rumble(Math.max(vehicle.skid * 0.35, vehicle.abs ? 0.3 : 0), 60);
-    sound.update(dt, vehicle.speed, vehicle.wheelSpeed, input.throttle, vehicle.skid);
+    sound.update(dt, vehicle.speed, vehicle.wheelSpeed, input.throttle, vehicle.skid, foot ? combat.player.pos.distanceTo(current.p) : 0);
     tyreFx.update(paused ? 0 : dt, vehicle, !!model.lean);
     streamer.sync();
     {
       // the people on the pavement: a car that runs one down feels it
       const lv = vehicle.body.linvel(), p = current.p;
-      const struck = pedestrians.update(paused ? 0 : dt, p.x, p.z, lv.x, lv.z);
+      const struck = pedestrians.update(paused ? 0 : dt, p.x, p.z, lv.x, lv.z, carPos().x, carPos().z);
       if (struck) {
         sound.crash(struck * 0.4);
         keys.rumble(0.4, 150);
@@ -527,7 +599,19 @@ async function boot() {
     model.group.position.lerpVectors(previous.p, current.p, blend);
     model.group.position.y += ROAD_HEIGHT;
     model.group.quaternion.slerpQuaternions(previous.q, current.q, blend);
-    streamer.cull(model.group.position.x, model.group.position.z);
+    combat.update(paused ? 0 : dt, blend, keys.foot(), director.facing);
+    // cars stop for anyone on foot in their lane: the people on the pavement, and whoever is out here fighting
+    traffic.walkers = combat.obstacles.length ? [...pedestrians.positions, ...combat.obstacles] : pedestrians.positions;
+    const here = carPos(), facing = foot ? director.facing : vehicle.heading;
+    hud.setPrompt(paused ? '' : combat.prompt);
+    if (foot) {
+      hud.setHealth(combat.player.health / 100);
+      hud.setHurt(paused ? 0 : dt, combat.player.health / 100);
+    } else hud.setHurt(dt, 1);
+    // where the car was left, for the maps
+    const parked = foot ? { x: current.p.x, z: current.p.z, heading: vehicle.heading } : null;
+    hud.setCarDistance(parked && Math.hypot(parked.x - here.x, parked.z - here.z));
+    streamer.cull(here.x, here.z);
 
     const spec = model.spec;
     model.wheels.forEach((w, i) => {
@@ -545,7 +629,7 @@ async function boot() {
       const into = THREE.MathUtils.clamp(-Math.atan((vehicle.speed * turning) / 9.81) - THREE.MathUtils.clamp(turning * 0.18, -0.5, 0.5) * sliding, -0.8, 0.8);
       model.lean.rotation.z += (into - model.lean.rotation.z) * Math.min(1, dt * 6);
     }
-    if (model.rider) model.rider.visible = director.mode !== 'cockpit';
+    if (model.rider) model.rider.visible = !foot && director.mode !== 'cockpit';
     model.setBraking(vehicle.braking);
     if (!paused && vehicle.isFlipped && Math.abs(vehicle.speed) < 2) {
       const before = overTime;
@@ -554,9 +638,9 @@ async function boot() {
     } else if (!vehicle.isFlipped) overTime = 0;
 
     daynight.update(paused ? 0 : dt);
-    if (gps.update(paused ? 0 : dt, model.group.position)) hud.say('You have arrived');
+    if (gps.update(paused ? 0 : dt, here)) hud.say('You have arrived');
     hud.setWaypointDistance(gps.waypoint ? gps.length : null);
-    if (bigmap.open) bigmap.render(model.group.position, vehicle.heading, gps.route, gps.waypoint, gps.length);
+    if (bigmap.open) bigmap.render(here, facing, gps.route, gps.waypoint, gps.length, parked);
     const dark = daynight.night > 0.5;
     if (dark !== wasDark) {
       wasDark = dark;
@@ -564,17 +648,18 @@ async function boot() {
     }
     carLamps.set(headlights ?? dark, vehicle.braking);
     traffic.setLights(dark);
-    lampLights.update(dt, model.group.position);
+    lampLights.update(dt, here);
 
-    director.update(dt, model.group, vehicle, spec);
-    shadows.follow(model.group.position);
+    if (foot) director.updateOnFoot(dt, here, 1.75, (from, dir, reach) => combat.sight(from, dir, reach));
+    else director.update(dt, model.group, vehicle, spec);
+    shadows.follow(here);
     daynight.follow(camera.position);
-    hud.update(vehicle.speed, model.group.position.x, model.group.position.z, vehicle.heading, gps.route, gps.waypoint);
+    hud.update(vehicle.speed, here.x, here.z, facing, gps.route, gps.waypoint, parked);
 
     roadTimer -= dt;
     if (roadTimer <= 0) {
       roadTimer = 0.6;
-      const p = model.group.position;
+      const p = here;
       const hit = nearestRoad(streamer.tiles, p.x, p.z, (r) => !!r.name && (isMajor(r) || isStreet(r)));
       void streamer.update(p.x, p.z);
       hud.setRegion(neighbourhood(p.x, p.z));
@@ -588,6 +673,8 @@ async function boot() {
       firstFrame = false;
       hideLoading();
       prefetchNext();
+      // the people who can be fought, drawn once out of sight: nobody waits for shaders at the first punch
+      void combat.ready.then(() => renderer.compileAsync(combat.warm, camera, scene)).catch((err) => console.warn('Figures not readied', err));
       if (gpu.kind === 'software' || otherCard) hud.say(`Drawing on ${gpu.name}: slow graphics. Esc › Graphics says how to use a faster card.`, 9000);
     }
     perf.frames++;
@@ -619,7 +706,8 @@ async function boot() {
       streamer,
       traffic,
       pedestrians,
-      debug: { THREE, scene, sun, renderer, camera },
+      combat,
+      debug: { THREE, scene, sun, renderer, camera, director },
       get vehicle() {
         return vehicle;
       },
@@ -642,6 +730,7 @@ async function boot() {
       state: () => {
         const p = vehicle.body.translation();
         return {
+          onFoot: combat.onFoot, health: Math.round(combat.player.health),
           car: model.spec.id, camera: director.mode, x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2),
           hour: +daynight.hour.toFixed(2), night: +daynight.night.toFixed(2),
           heading: +THREE.MathUtils.radToDeg(vehicle.heading).toFixed(1), kmh: +(vehicle.speed * 3.6).toFixed(1), flipped: vehicle.isFlipped,

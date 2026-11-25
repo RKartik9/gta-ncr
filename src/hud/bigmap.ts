@@ -1,6 +1,6 @@
 import type { Grid, Tile } from '../world/tile.ts';
 import { NEIGHBOURHOODS } from '../world/landmarks.ts';
-import { ROUTE_COLOUR, drawTiles } from './hud.ts';
+import { ROUTE_COLOUR, drawCarMarker, drawTiles } from './hud.ts';
 
 /** Pixels per metre of the pre-drawn whole-city image; zooming in past it just enlarges. */
 const BAKED = 0.6;
@@ -125,7 +125,8 @@ export class BigMap {
     return [this.cx + (sx - innerWidth / 2) / this.zoom, this.cz + (sy - innerHeight / 2) / this.zoom];
   }
 
-  render(car: { x: number; z: number }, heading: number, route: number[] | null, waypoint: [number, number] | null, routeLength: number | null) {
+  /** `car` is where the player is; `parked`, the car they have left, when they are out of it. */
+  render(car: { x: number; z: number }, heading: number, route: number[] | null, waypoint: [number, number] | null, routeLength: number | null, parked: { x: number; z: number; heading: number } | null = null) {
     const g = this.ctx, w = innerWidth, h = innerHeight;
     const b = this.grid.bounds;
     this.cx = Math.min(b.maxX, Math.max(b.minX, this.cx));
@@ -174,6 +175,17 @@ export class BigMap {
       g.lineWidth = 2.5;
       g.stroke();
       g.fill();
+    }
+
+    if (parked) {
+      g.save();
+      g.translate(sx(parked.x), sy(parked.z));
+      drawCarMarker(g, Math.PI - parked.heading, 1.2);
+      g.fillStyle = '#fff';
+      g.font = '600 12px -apple-system, "Segoe UI", sans-serif';
+      g.textAlign = 'center';
+      g.fillText('Your car', 0, -20);
+      g.restore();
     }
 
     // the car, pointing the way it faces

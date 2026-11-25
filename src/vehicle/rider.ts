@@ -24,10 +24,10 @@ const RIDING: Pose = {
   UpLeg: [0.24, -0.28, 1], Leg: [0, -0.85, -0.5], Foot: [0.05, -0.2, 1],
 };
 
-type Figure = { root: THREE.Object3D; bones: Map<string, THREE.Object3D>; rest: Map<THREE.Object3D, THREE.Quaternion> };
+export type Figure = { root: THREE.Object3D; bones: Map<string, THREE.Object3D>; rest: Map<THREE.Object3D, THREE.Quaternion> };
 const figures = new Map<string, Promise<Figure>>();
 /** A rigged figure under public/models (any with the usual Mixamo / Ready Player Me skeleton); the driver by default. */
-const load = (file = 'rider/model.glb') => {
+export const loadFigure = (file = 'rider/model.glb') => {
   let figure = figures.get(file);
   if (!figure) figures.set(file, (figure = new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}models/${file}`).then((gltf) => {
     const bones = new Map<string, THREE.Object3D>(), rest = new Map<THREE.Object3D, THREE.Quaternion>();
@@ -84,7 +84,7 @@ function findGrips(frame: THREE.Object3D, hips: THREE.Vector3, shoulderUp: numbe
  * A vehicle that cannot have him (the figure failed to load) simply goes without.
  */
 /** Bends the figure into `pose`, parents first. A name with no Left or Right is the left side's, mirrored onto the right. */
-function applyPose(bones: Map<string, THREE.Object3D>, pose: Pose) {
+export function applyPose(bones: Map<string, THREE.Object3D>, pose: Pose) {
   for (const [name, [x, y, z]] of Object.entries(pose)) {
     const bone = bones.get(name);
     if (bone) aim(bone, [x, y, z]);
@@ -125,7 +125,7 @@ function freeze(root: THREE.Object3D) {
 
 /** A figure stood in each of `poses` and frozen, for the people in the street: plain meshes in its own space (x to its left, z ahead). */
 export async function posedFigures(poses: Pose[], file?: string) {
-  const { root, bones, rest } = await load(file);
+  const { root, bones, rest } = await loadFigure(file);
   return poses.map((pose) => {
     for (const [bone, q] of rest) bone.quaternion.copy(q);
     applyPose(bones, pose);
@@ -135,7 +135,7 @@ export async function posedFigures(poses: Pose[], file?: string) {
 
 export async function seatRider(model: CarModel): Promise<CarModel> {
   try {
-    const { root, bones, rest } = await load();
+    const { root, bones, rest } = await loadFigure();
     const spec = model.spec, bike = !!model.lean;
     for (const [bone, q] of rest) bone.quaternion.copy(q);
     const pose: Pose = { ...(bike ? RIDING : DRIVING) };

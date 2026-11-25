@@ -45,10 +45,24 @@ export class CameraDirector {
   private lookIdle = 10;
   private chaseZoom = 1;
 
+  // on foot: over the shoulder of whoever the player is, turned by the mouse, which the game holds while they walk
+  private onFoot = false;
+  private footYaw = 0;
+  private footPitch = 0.22;
+  private footZoom = 1;
+  private footBack = 3;
+  private shaking = 0;
+  private quake = new THREE.Vector3();
+
   constructor(dom: HTMLElement) {
     this.camera = new THREE.PerspectiveCamera(this.fov, window.innerWidth / window.innerHeight, 0.15, 6000);
     let dragging = false;
     dom.addEventListener('pointerdown', (e) => {
+      if (this.onFoot) {
+        // a click is a punch from here on, not a drag: the mouse is taken until Esc gives it back
+        void dom.requestPointerLock?.();
+        return;
+      }
       if (this.mode === 'cinematic') return;
       dragging = true;
       dom.setPointerCapture(e.pointerId);
@@ -61,11 +75,12 @@ export class CameraDirector {
     dom.addEventListener('pointerup', release);
     dom.addEventListener('pointercancel', release);
     dom.addEventListener('pointermove', (e) => {
-      if (dragging) this.turn(e.movementX, e.movementY);
+      if (dragging || document.pointerLockElement === dom) this.turn(e.movementX, e.movementY);
     });
     dom.addEventListener('wheel', (e) => {
       e.preventDefault();
-      if (this.mode === 'drone') {
+      if (this.onFoot) this.footZoom = clamp(this.footZoom * Math.exp(e.deltaY * 0.001), 0.6, 2.2);
+      else if (this.mode === 'drone') {
         this.orbitDistance = clamp(this.orbitDistance * Math.exp(e.deltaY * 0.001), 4, 260);
       } else if (this.mode === 'chase') this.chaseZoom = clamp(this.chaseZoom * Math.exp(e.deltaY * 0.001), 0.6, 3);
     }, { passive: false });
@@ -73,6 +88,11 @@ export class CameraDirector {
 
   /** Look round by a mouse movement in pixels (or the controller's right stick, scaled to match). */
   turn(dx: number, dy: number) {
+    if (this.onFoot) {
+      this.footYaw -= dx * 0.0035;
+      this.footPitch = clamp(this.footPitch + dy * 0.003, -0.55, 1.25);
+      return;
+    }
     if (this.mode === 'cinematic') return;
     if (this.mode === 'drone') {
       this.orbitYaw -= dx * 0.005;
@@ -94,6 +114,52 @@ export class CameraDirector {
 
   next() {
     this.setMode(CAMERA_MODES[(CAMERA_MODES.indexOf(this.mode) + 1) % CAMERA_MODES.length]);
+  }
+
+  /** Out of the car, looking the way `yaw` runs; or back in it, and the mouse is the player's own again. */
+  setOnFoot(on: boolean, yaw: number) {
+    this.onFoot = on;
+    this.footYaw = yaw;
+    this.footPitch = 0.22;
+    this.cut();
+    if (!on && document.pointerLockElement) document.exitPointerLock();
+  }
+
+  /** A jolt to the camera of about `amount` metres: a blow landed or taken. */
+  shake(amount: number) {
+    this.shaking = Math.min(0.4, this.shaking + amount);
+  }
+
+  /** The way the camera looks on foot, as a heading: what "forward" means to the player's feet. */
+  get facing() {
+    return this.footYaw;
+  }
+
+  /**
+   * On foot: behind and a little to the right of someone standing at `feet`, `tall` metres high. `sight` says how
+   * far there is clear behind them (null: all the way), so the camera comes in rather than go through a wall.
+   */
+  updateOnFoot(dt: number, feet: THREE.Vector3, tall: number, sight: (from: THREE.Vector3, dir: THREE.Vector3, reach: number) => number | null) {
+    const cam = this.camera, yaw = this.footYaw, c = Math.cos(this.footPitch);
+    const pivot = new THREE.Vector3(feet.x - Math.cos(yaw) * 0.42, feet.y + tall * 0.9, feet.z + Math.sin(yaw) * 0.42);
+    const back = new THREE.Vector3(-Math.sin(yaw) * c, Math.sin(this.footPitch), -Math.cos(yaw) * c);
+    const most = 3 * this.footZoom, clear = sight(pivot, back, most + 0.4);
+    const room = clear === null ? most : Math.max(0.5, clear - 0.35);
+    // in at once when something is in the way, out again gently
+    this.footBack = this.snap || room < this.footBack ? room : lerp(this.footBack, room, damp(4, dt));
+    cam.up.copy(UP);
+    cam.position.copy(pivot).addScaledVector(back, this.footBack);
+    cam.position.y = Math.max(cam.position.y, feet.y + 0.25);
+    cam.lookAt(pivot.addScaledVector(back, -10));
+    if (this.shaking > 0.002) {
+      // a sharp jolt that dies away fast, mostly up and down, and a little roll with it
+      this.quake.set((Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2.6, (Math.random() - 0.5) * 2).multiplyScalar(this.shaking);
+      cam.position.add(this.quake);
+      cam.rotateZ(this.quake.x * 0.25);
+      this.shaking *= Math.exp(-11 * dt);
+    }
+    this.snap = false;
+    this.lens(60, 0.1);
   }
 
   /** Call when the car is moved or swapped, so the camera jumps instead of flying across the map. */
@@ -213,6 +279,11 @@ export class CameraDirector {
     }
 
     this.snap = false;
+    this.lens(fov, near);
+  }
+
+  private lens(fov: number, near: number) {
+    const cam = this.camera;
     this.fov = fov;
     if (cam.fov !== fov || cam.near !== near) {
       cam.fov = fov;
