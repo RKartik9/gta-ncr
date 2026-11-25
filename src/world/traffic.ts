@@ -146,7 +146,7 @@ export class Traffic {
   /** people on the pavement and stepping off it: a car stops for one in its lane */
   walkers: { x: number; z: number }[] = [];
   /** every vehicle driving, and the velocity it drives at: for people to judge a gap to cross in */
-  readonly positions: { x: number; z: number; vx: number; vz: number }[] = [];
+  readonly positions: { x: number; z: number; vx: number; vz: number; id: number; kind: string }[] = [];
   /** a driver sounds the horn at (x, z): a quick tap, two taps, or leaning on it; `pitch` is that car's horn */
   onHonk?: (x: number, z: number, kind: 'tap' | 'double' | 'long', pitch: number) => void;
   /**
@@ -156,6 +156,8 @@ export class Traffic {
   onWreck?: (car: { body: RAPIER.RigidBody; aggression: number; width: number; near: boolean; leave: () => boolean }) => void;
   private time = 0;
   private lampTimer = 0;
+  /** till some driver nearby sounds the horn for no reason the player gave: it is Delhi */
+  private idleHonk = 3;
   private cars: Car[] = [];
   private shells: Instances[] = [];
   private wheels: Instances[] = [];
@@ -608,7 +610,16 @@ export class Traffic {
     }
     this.spawn(px, pz);
     this.positions.length = 0;
-    for (const car of this.cars) if (car.on && !car.wrecked) this.positions.push({ x: car.x, z: car.z, vx: car.vx, vz: car.vz });
+    this.cars.forEach((car, id) => {
+      if (car.on && !car.wrecked) this.positions.push({ x: car.x, z: car.z, vx: car.vx, vz: car.vz, id, kind: car.kind.id });
+    });
+    this.idleHonk -= dt;
+    if (this.idleHonk <= 0) {
+      this.idleHonk = 1.5 + Math.random() * 4;
+      const near = this.cars.filter((c) => c.on && !c.wrecked && Math.hypot(c.x - px, c.z - pz) < 120);
+      const car = near[Math.floor(Math.random() * near.length)];
+      if (car) this.onHonk?.(car.x, car.z, Math.random() < 0.6 ? 'tap' : 'double', car.hornPitch);
+    }
     this.draw();
     this.lampTimer -= dt;
     if (this.lampTimer <= 0) {

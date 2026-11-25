@@ -66,9 +66,9 @@ function blotches(g: Ctx, w: number, h: number, count: number, colour: string, m
 export function asphaltTexture() {
   const s = 1024;
   const [c, g] = canvas(s, s);
-  g.fillStyle = '#45464a';
+  g.fillStyle = '#4a4843';
   g.fillRect(0, 0, s, s);
-  blotches(g, s, s, 40, '#5a5a5c', 190, 0.35, 11);
+  blotches(g, s, s, 40, '#5e5a52', 190, 0.35, 11);
   blotches(g, s, s, 30, '#2c2d30', 150, 0.4, 12);
   blotches(g, s, s, 14, '#1c1c1e', 60, 0.5, 13); // oil
   const rnd = mulberry32(14);

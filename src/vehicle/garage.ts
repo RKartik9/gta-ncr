@@ -29,7 +29,7 @@ export interface GarageEntry {
 // narrow car that cannot fall over; the picture has two wheels and leans.
 // ponytail: no wheelies, no falling off; a real two-wheel model if bikes become the point of the game.
 const BIKE: CarSpec = {
-  id: 'bike', name: 'Bike', enginePitch: 1.5,
+  id: 'bike', name: 'Bike', enginePitch: 1.2, cylinders: 2,
   mass: 290, length: 2.1, width: 0.8, height: 1.2, groundClearance: 0.16, centreOfMass: 0.36,
   wheelRadius: 0.3, track: 0.5, axleFront: 0.7, axleRear: -0.7, suspensionRest: 0.22, suspensionStiffness: 40,
   weightFront: 0.48, antiRoll: 20, driveFront: 0, engineForce: 2500, reverseForce: 500, brakeDecel: 12, brakeFront: 0.65,

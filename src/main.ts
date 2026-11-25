@@ -81,7 +81,7 @@ async function boot() {
   const director = new CameraDirector(canvas);
   const camera = director.camera;
   // ?time=22 starts at night; ?speed= is game hours per real second (0 freezes the clock)
-  const daynight = new DayNight(scene, renderer, Number(query.get('time') ?? saved?.hour ?? 16), Number(query.get('speed') ?? 1 / 60), quality.fog);
+  const daynight = new DayNight(scene, renderer, Number(query.get('time') ?? saved?.hour ?? 16), Number(query.get('speed') ?? 1 / 60), quality.fog, quality.drawDistance);
   if (saved && !query.has('time')) daynight.running = saved.clockRunning;
   const sun = daynight.sun;
   scene.add(buildBasePlane(grid.bounds));
@@ -249,6 +249,7 @@ async function boot() {
   }
 
   const sound = new Sound();
+  const earAhead = new THREE.Vector3();
   sound.setCar(model.spec);
   const music = new Music();
   music.resumeOnGesture();
@@ -298,7 +299,7 @@ async function boot() {
   pedestrians.setRoads(all.roads.filter(hasPavement));
   traffic.walkers = pedestrians.positions;
   pedestrians.vehicles = traffic.positions;
-  traffic.onHonk = (x, z, kind, pitch) => sound.honk(Math.hypot(x - carPos().x, z - carPos().z), kind, pitch);
+  traffic.onHonk = (x, z, kind, pitch) => sound.honk(x, z, kind, pitch);
   bigmap.setTiles([all]);
   const toggleMap = (open = !bigmap.open) => {
     if (open) hud.toggleMenu(false);
@@ -584,6 +585,9 @@ async function boot() {
     // tyres at their limit come through the controller as a light buzz, the anti-lock as a harder one
     if (steps && (vehicle.skid > 0.2 || vehicle.abs)) keys.rumble(Math.max(vehicle.skid * 0.35, vehicle.abs ? 0.3 : 0), 60);
     sound.update(dt, vehicle.speed, vehicle.wheelSpeed, input.throttle, vehicle.skid, foot ? combat.player.pos.distanceTo(current.p) : 0);
+    camera.getWorldDirection(earAhead);
+    sound.listen(dt, camera.position.x, camera.position.y, camera.position.z, earAhead.x, earAhead.z);
+    sound.traffic(dt, traffic.positions);
     tyreFx.update(paused ? 0 : dt, vehicle, !!model.lean);
     streamer.sync();
     {

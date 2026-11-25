@@ -45,7 +45,7 @@ const PRESETS: Record<QualityName, Quality> = {
   },
   high: {
     name: 'high', pixelRatio: 1.25, minPixelRatio: 0.75, maxPixelRatio: 1.5, shadowCascades: 2, shadowMapSize: 2048, shadowFar: 200,
-    ambientOcclusion: false, bloom: true, msaa: 4, treeDensity: 0.85, anisotropy: 8, lampLights: 6, headlightShadow: false, drawDistance: 420, detailDistance: 220, traffic: 44, pedestrians: 40, fighters: 6, fog: 0.0029,
+    ambientOcclusion: true, bloom: true, msaa: 4, treeDensity: 0.85, anisotropy: 8, lampLights: 6, headlightShadow: false, drawDistance: 420, detailDistance: 220, traffic: 44, pedestrians: 40, fighters: 6, fog: 0.0029,
   },
   ultra: {
     name: 'ultra', pixelRatio: 2, minPixelRatio: 1, maxPixelRatio: 2, shadowCascades: 3, shadowMapSize: 2048, shadowFar: 320,

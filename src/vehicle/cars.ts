@@ -52,8 +52,11 @@ export interface CarSpec {
   drag: number;
   downforce: number;
 
-  /** engine recording's pitch for this car: above 1 sounds higher and more highly strung */
+  /** the engine's pitch for this car: above 1 sounds higher and more highly strung */
   enginePitch: number;
+  /** cylinders for the synthesised engine: 4 if not given */
+  cylinders?: number;
+  diesel?: boolean;
 
   /** camera positions in car space: x left, y above the road, z towards the nose */
   hoodCamera: [number, number, number];
@@ -72,7 +75,8 @@ export const axleHeight = (c: CarSpec) => c.wheelRadius - rideHeight(c) + restLe
 // Published figures: 4.98 x 2.10 x 1.13 m, 2.70 m wheelbase, about 1.6 t dry, 0-100 km/h in 2.8 s, 350 km/h.
 export const SIAN: CarSpec = {
   id: 'sian',
-  enginePitch: 1.25,
+  enginePitch: 1.0,
+  cylinders: 12,
   name: 'Lamborghini Sián FKP 37',
   model: 'sian',
   credit: '"2020 Lamborghini Sián FKP 37" by Ddiaz Design (sketchfab.com/ddiaz-design), CC BY 4.0',
@@ -109,7 +113,8 @@ export const SIAN: CarSpec = {
 // Published figures: 4.87 x 1.98 x 1.97 m, 2.89 m wheelbase, about 2.6 t, 0-100 km/h in 4.4 s, limited to 220 km/h.
 export const G63: CarSpec = {
   id: 'g63',
-  enginePitch: 0.85,
+  enginePitch: 0.95,
+  cylinders: 8,
   name: 'Mercedes-AMG G 63',
   model: 'g63',
   credit: '"2025 Mercedes-Benz G-Class AMG G 63" by Ddiaz Design (sketchfab.com/ddiaz-design), CC BY-NC-SA 4.0',
@@ -186,7 +191,8 @@ export const HATCHBACK: CarSpec = {
 // 0-100 km/h in about 10 s, 155 km/h. No model file: it is built in code (`buildCodedCar`).
 export const THAR: CarSpec = {
   id: 'thar',
-  enginePitch: 0.9,
+  enginePitch: 1,
+  diesel: true,
   name: 'Mahindra Thar',
   mass: 1750,
   length: 3.985,

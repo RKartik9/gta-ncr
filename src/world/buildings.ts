@@ -20,8 +20,10 @@ const FORT = { x: 850, z: 4950, r: 950 };
 const PLASTER_TINTS: [number, number, number][] = CITY === 'mumbai' ? [
   [0.84, 0.82, 0.77], [0.9, 0.86, 0.78], [0.74, 0.75, 0.73], [0.93, 0.89, 0.81], [0.82, 0.8, 0.84], [0.78, 0.84, 0.82], [0.95, 0.93, 0.88], [0.68, 0.66, 0.62], [0.88, 0.8, 0.7],
 ] : [
-  [1, 0.97, 0.9], [0.98, 0.9, 0.78], [0.95, 0.84, 0.78], [0.86, 0.92, 0.94], [0.93, 0.93, 0.85], [0.99, 0.93, 0.7], [0.88, 0.95, 0.86], [0.9, 0.88, 0.86],
-];
+  // ochre, salmon, pistachio, powder blue, cream, dusty pink, terracotta, lime-wash white, mint. Picked by eye in
+  // sRGB and converted, since vertex colours are linear: the old linear 0.9s all came out near-white.
+  0xe8c27a, 0xe6a58c, 0xb9d3a4, 0xa9c6d6, 0xf2e6c8, 0xe0b0b4, 0xd08a62, 0xf5f2ea, 0xa8d5c2,
+].map((hex) => new THREE.Color(hex).toArray() as [number, number, number]);
 
 /** Towers round Connaught Place that people know by sight: red sandstone for the LIC building, glass for Statesman House. */
 const KNOWN: Record<string, Style> = {

@@ -1,7 +1,8 @@
-engine.wav   "Car Engine Loop 96kHz, 4s" by qubodup, https://opengameart.org/content/car-engine-loop-96khz-4s
-             CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/). Converted to mono.
 skid.wav     "Chrysler LHS tire squeal 04" by audible-edge, https://freesound.org/people/audible-edge/sounds/71739/ (CC0). Cut 5.2-7.0 s, looped.
 horn.wav     "car horn.wav" by keweldog, https://freesound.org/people/keweldog/sounds/182474/ (CC0). Cut 1.15-2.35 s; loops from 0.4 s.
 crash-1.mp3  "Clank Car Crash Collision" by qubodup, https://freesound.org/people/qubodup/sounds/151624/ (CC0)
 crash-2.mp3  "Car Crash" by squareal, https://freesound.org/people/squareal/sounds/237375/ (CC0). Trimmed to 3 s.
 crash-3.mp3  "Car Crash (with Glass)" by magnuswaker, https://freesound.org/people/magnuswaker/sounds/592388/ (CC0)
+
+Engines (src/audio/engine.ts) are synthesised, after the combustion synth in mrdoob's slop-newyork,
+https://github.com/mrdoob/slop-newyork (MIT). The colour grade and the warm ground light are after it too.

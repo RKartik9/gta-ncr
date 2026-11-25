@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { builtinAOContext, mrt, normalView, packNormalToRGB, pass, renderOutput, sample, screenUV, unpackRGBToNormal } from 'three/tsl';
+import { builtinAOContext, float, luminance, mix, mrt, normalView, packNormalToRGB, pass, renderOutput, sample, saturation, screenUV, smoothstep, uniform, unpackRGBToNormal, vec3, vec4 } from 'three/tsl';
 import { ssao } from 'three/addons/tsl/display/SSAONode.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
@@ -12,9 +12,10 @@ export async function createRenderer(canvas: HTMLCanvasElement, quality: Quality
   await renderer.init();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, quality.pixelRatio));
   renderer.setSize(window.innerWidth, window.innerHeight, false);
-  // Neutral keeps colours true (AgX washed the city out to grey)
-  renderer.toneMapping = THREE.NeutralToneMapping;
-  renderer.toneMappingExposure = 1;
+  // ACES gives the shoulder and mid-tone punch; the grade in createPipeline() puts back the saturation it eats.
+  // (Neutral kept colours true but flat; AgX washed the city out to grey.) DayNight sets the exposure.
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.8;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   return renderer;
@@ -116,16 +117,39 @@ export function createPipeline(renderer: THREE.WebGPURenderer, scene: THREE.Scen
   // Bloom only on what is genuinely bright: the sun on chrome and glass, lamps, brake lights.
   const glow = quality.bloom ? bloom(colour, 0.07, 0.4, 2.2) : null;
   const lit = glow ? colour.add(glow) : colour;
+  // Tone map and encode first, then grade on what the eye sees (after mrdoob's slop-newyork, MIT).
+  const look = { contrast: uniform(0.3), saturation: uniform(1.06), warmth: uniform(1) };
+  const graded = grade(renderOutput(lit), look);
   // No MSAA on low: FXAA smooths the edges for almost nothing.
-  pipeline.outputNode = quality.msaa ? lit : fxaa(renderOutput(lit));
-  if (!quality.msaa) pipeline.outputColorTransform = false;
+  pipeline.outputNode = quality.msaa ? graded : fxaa(graded);
+  pipeline.outputColorTransform = false;
   return {
     pipeline,
     /** night: 0 by day, 1 at night. Lamps and windows bloom at night without blowing out the daytime sun on glass. */
     setNight(night: number) {
+      // nights a touch flatter and cooler, so lamps carry the colour rather than the grade
+      look.contrast.value = 0.3 - 0.1 * night;
+      look.warmth.value = 1 - night;
       if (!glow) return;
       glow.threshold.value = 2.2 - 1.4 * night;
       glow.strength.value = 0.07 + 0.18 * night;
     },
   };
 }
+
+/**
+ * The colour grade, on display-encoded colour: cool shadows and warm highlights, a soft S-curve for contrast that
+ * never clips, saturation plus vibrance (which lifts dull colours more than vivid ones), and a light vignette.
+ */
+function grade(input: ReturnType<typeof renderOutput>, look: { contrast: UniformNumber; saturation: UniformNumber; warmth: UniformNumber }) {
+  const c = input.rgb;
+  const l = luminance(c);
+  const cool = vec3(0.985, 1, 1.02), warm = vec3(1.035, 1.005, 0.965);
+  const split = mix(cool, mix(vec3(1), warm, look.warmth), smoothstep(0.2, 0.8, l));
+  let o = c.mul(split).clamp(0, 1);
+  o = mix(o, smoothstep(0, 1, o), look.contrast);
+  o = saturation(o, look.saturation);
+  const edge = smoothstep(0.35, 0.95, screenUV.sub(0.5).length().mul(1.4));
+  return vec4(o.mul(float(1).sub(edge.mul(0.12))), 1);
+}
+type UniformNumber = ReturnType<typeof uniform<'float'>>;

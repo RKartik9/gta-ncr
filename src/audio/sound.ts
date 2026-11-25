@@ -1,38 +1,55 @@
 import type { CarSpec } from '../vehicle/cars.ts';
 import { clamp, damp, store, stored } from '../util.ts';
 import type { Thump } from '../character/combat.ts';
+import { EngineVoice, bank } from './engine.ts';
 
 /** Where each gear tops out, as a share of the car's top speed. */
 const GEARS = [0.17, 0.3, 0.45, 0.61, 0.79, 1];
-const IDLE = 850, REDLINE = 7200;
-/** the engine recording's playback rate at idle and at the redline; past ~2.6x a real engine starts to sound like a toy */
-const RATE_IDLE = 0.85, RATE_TOP = 2.6;
+const IDLE = 850;
+/** how long the throttle is cut while the gearbox changes up: what makes a shift heard */
+const SHIFT_CUT = 0.16;
+/** other drivers' engines heard at once, nearest first; more is mush and costs */
+const NPC_VOICES = 6;
+const NPC_RANGE = 70;
+/** how many other drivers' horns can sound together */
+const NPC_HORNS = 3;
 /** horn.wav: the press, then the held note from here to the end loops for as long as the horn is held */
 const HORN_LOOP = 0.4;
 const VOLUME_KEY = 'delhi-drive:sfx-volume';
-const FILES = ['engine.wav', 'skid.wav', 'horn.wav', 'crash-1.mp3', 'crash-2.mp3', 'crash-3.mp3'] as const;
+const FILES = ['skid.wav', 'horn.wav', 'crash-1.mp3', 'crash-2.mp3', 'crash-3.mp3'] as const;
 type Clip = (typeof FILES)[number];
 
 /**
- * Game sounds from real recordings (public/sounds, credits in CREDITS.txt): the engine loop pitched with the revs,
- * a tyre squeal, a held horn and three crashes picked by how hard the hit was. Wind is filtered noise.
+ * Game sounds. Engines, the player's and the nearest traffic's, are synthesised (engine.ts); the rest are real
+ * recordings (public/sounds, credits in CREDITS.txt): a tyre squeal, a held horn and three crashes picked by how
+ * hard the hit was. Wind and the city's distant rumble are filtered noise. Other cars and horns are placed
+ * around the listener (the camera), with Doppler as they pass.
  * The browser only allows sound after a click or key press, so nothing starts until the first one.
  */
 export class Sound {
   private ctx: AudioContext | null = null;
   private bus!: GainNode;
   private clips = new Map<Clip, AudioBuffer>();
-  private engine: { src: AudioBufferSourceNode; filter: BiquadFilterNode; gain: GainNode } | null = null;
+  private engine: EngineVoice | null = null;
+  private cylinders = 4;
+  private diesel = false;
+  private redline = 7200;
+  private shiftCut = 0;
+  /** other drivers' engines by car id, each placed by its own panner */
+  private npcs = new Map<number, { voice: EngineVoice; panner: PannerNode; kind: string; speed: number; effort: number; gear: number }>();
+  private rumble!: { filter: BiquadFilterNode; gain: GainNode };
+  private ear = { x: 0, y: 0, z: 0, vx: 0, vz: 0 };
   private skid: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
   private wind!: { filter: BiquadFilterNode; gain: GainNode };
   private noise: AudioBuffer | null = null;
   private horn: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
   private hornOn = false;
-  /** the street's horns: none before this time */
-  private npcHornFree = 0;
+  /** when each of the street's horns now sounding stops */
+  private npcHorns: number[] = [];
   private paused = false;
   private rpm = IDLE;
   private gear = 0;
+  private lastGear = 0;
   private crashCooldown = 0;
   private pitch = 1;
   private topSpeed = 60;
@@ -53,6 +70,10 @@ export class Sound {
   setCar(spec: CarSpec) {
     this.pitch = spec.enginePitch;
     this.topSpeed = spec.topSpeed;
+    this.cylinders = spec.cylinders ?? 4;
+    this.diesel = !!spec.diesel;
+    this.redline = this.diesel ? 4600 : 7200;
+    if (this.ctx) this.startEngine();
   }
 
   setVolume(v: number) {
@@ -86,7 +107,11 @@ export class Sound {
     const d = noise.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     this.wind = this.noiseLoop(noise);
+    // the city past the next block: traffic heard as a low roar more than as cars
+    this.rumble = this.noiseLoop(noise);
+    this.rumble.filter.frequency.value = 220;
     this.noise = noise;
+    this.startEngine();
 
     for (const name of FILES) {
       fetch(`${import.meta.env.BASE_URL}sounds/${name}`)
@@ -94,7 +119,6 @@ export class Sound {
         .then((b) => ctx.decodeAudioData(b))
         .then((buf) => {
           this.clips.set(name, buf);
-          if (name === 'engine.wav') this.startEngine(buf);
           if (name === 'skid.wav') this.skid = this.loop(buf);
         })
         .catch((err) => console.warn(`sound ${name} failed to load`, err));
@@ -129,16 +153,9 @@ export class Sound {
     return { src, gain };
   }
 
-  private startEngine(buffer: AudioBuffer) {
-    const ctx = this.ctx!;
-    const { src, gain } = this.loop(buffer);
-    src.disconnect();
-    // off the throttle the exhaust note goes dull; on it, the full bark comes through
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.Q.value = 0.8;
-    src.connect(filter).connect(gain);
-    this.engine = { src, filter, gain };
+  private startEngine() {
+    this.engine?.stop();
+    this.engine = new EngineVoice(this.ctx!, bank(this.ctx!, this.cylinders, this.diesel), this.bus);
   }
 
   /** Held horn: the press, then the steady note for as long as the button is down. */
@@ -184,18 +201,17 @@ export class Sound {
     const top = (g: number) => GEARS[g] * this.topSpeed;
     if (this.gear < GEARS.length - 1 && v > top(this.gear) * 0.97) this.gear++;
     else if (this.gear > 0 && v < top(this.gear - 1) * 0.8) this.gear--;
-    let want = (v / top(this.gear)) * REDLINE;
+    if (this.gear > this.lastGear) this.shiftCut = SHIFT_CUT;
+    this.lastGear = this.gear;
+    this.shiftCut -= dt;
+    let want = (v / top(this.gear)) * this.redline;
     if (v < 3) want = Math.max(want, IDLE + gas * 2600); // revving when pulling away or standing still
-    want = clamp(want, IDLE, REDLINE);
-    this.rpm += (want - this.rpm) * damp(want < this.rpm ? 7 : 12, dt);
-    const r = (this.rpm - IDLE) / (REDLINE - IDLE);
-
-    const e = this.engine;
-    if (e) {
-      e.src.playbackRate.setTargetAtTime(this.pitch * (RATE_IDLE + (RATE_TOP - RATE_IDLE) * r), t, 0.03);
-      e.filter.frequency.setTargetAtTime(700 + gas * 5000 + r * 2500, t, 0.06);
-      e.gain.gain.setTargetAtTime((0.32 + 0.3 * gas + 0.2 * r) / (1 + (away / 7) ** 2), t, 0.06);
-    }
+    want = clamp(want, IDLE, this.redline);
+    // the revs drop fast on a shift, as the clutch lets the engine fall to the next gear's speed
+    this.rpm += (want - this.rpm) * damp(want < this.rpm ? (this.shiftCut > 0 ? 22 : 7) : 12, dt);
+    // load: the throttle, and some just to keep a car rolling at speed; the gearbox cuts it while it shifts
+    const effort = this.shiftCut > 0 ? 0.1 : Math.min(1, gas + road * 0.005);
+    this.engine?.set(this.rpm, effort, this.pitch, 0.55 / (1 + (away / 7) ** 2), this.shiftCut > 0 ? 0.012 : 0.04);
 
     this.wind.gain.gain.setTargetAtTime(Math.min(0.12, road * 0.0025), t, 0.15);
     this.wind.filter.frequency.setTargetAtTime(250 + road * 12, t, 0.15);
@@ -207,19 +223,109 @@ export class Sound {
     }
   }
 
+  /** A panner at (x, z): heard from its side of the listener, quieter with distance as a real source is. */
+  private place(x: number, z: number, ref = 4) {
+    const p = this.ctx!.createPanner();
+    p.panningModel = 'HRTF';
+    p.distanceModel = 'inverse';
+    p.refDistance = ref;
+    p.rolloffFactor = 1.15;
+    p.maxDistance = 500;
+    p.positionX.value = x;
+    p.positionY.value = 1;
+    p.positionZ.value = z;
+    p.connect(this.bus);
+    return p;
+  }
+
+  /** Where the sound is heard from: the camera. `fx, fz` the way it faces. */
+  listen(dt: number, x: number, y: number, z: number, fx: number, fz: number) {
+    if (!this.ctx) return;
+    const l = this.ctx.listener, e = this.ear;
+    if (dt > 0) {
+      e.vx = (x - e.x) / dt;
+      e.vz = (z - e.z) / dt;
+    }
+    e.x = x; e.y = y; e.z = z;
+    l.positionX.value = x;
+    l.positionY.value = y;
+    l.positionZ.value = z;
+    l.forwardX.value = fx;
+    l.forwardY.value = 0;
+    l.forwardZ.value = fz;
+    l.upX.value = 0;
+    l.upY.value = 1;
+    l.upZ.value = 0;
+  }
+
   /**
-   * Another driver's horn, `distance` metres away: a tap, two taps, or a long blast. Played from the steady note
-   * (the clip's press is a thump that, cut short, sounded like a bark), shaped so it starts and stops cleanly,
-   * and muffled with distance as a real one is. One at a time across the street, so it never turns into a chorus.
+   * The traffic heard: the nearest few engines, each placed where its car is and pitched by its speed and by
+   * Doppler, and the distant roar of all of it. Call once a frame after listen().
    */
-  honk(distance: number, kind: 'tap' | 'double' | 'long', pitch: number) {
+  traffic(dt: number, cars: readonly { x: number; z: number; vx: number; vz: number; id: number; kind: string }[]) {
+    const ctx = this.ctx;
+    if (!ctx || this.paused || dt <= 0) return;
+    const e = this.ear;
+    const near = cars
+      .map((c) => ({ c, d: Math.hypot(c.x - e.x, c.z - e.z) }))
+      .filter((n) => n.d < NPC_RANGE)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, NPC_VOICES);
+    const keep = new Set(near.map((n) => n.c.id));
+    for (const [id, n] of this.npcs) {
+      if (keep.has(id) && n.kind === near.find((m) => m.c.id === id)!.c.kind) continue;
+      n.voice.stop();
+      setTimeout(() => n.panner.disconnect(), 300);
+      this.npcs.delete(id);
+    }
+    for (const { c, d } of near) {
+      // an auto-rickshaw's single cylinder, a bus's diesel six, a car's four
+      const [cyl, diesel, idle, ratio] = c.kind.startsWith('auto') ? [1, false, 1500, 900] : c.kind.includes('bus') ? [6, true, 620, 160] : [4, false, 780, 500];
+      let n = this.npcs.get(c.id);
+      if (!n) {
+        const panner = this.place(c.x, c.z);
+        n = { voice: new EngineVoice(ctx, bank(ctx, cyl, diesel), panner), panner, kind: c.kind, speed: Math.hypot(c.vx, c.vz), effort: 0.2, gear: 0 };
+        this.npcs.set(c.id, n);
+      }
+      const t = ctx.currentTime;
+      n.panner.positionX.setTargetAtTime(c.x, t, 0.03);
+      n.panner.positionZ.setTargetAtTime(c.z, t, 0.03);
+      const speed = Math.hypot(c.vx, c.vz);
+      const accel = (speed - n.speed) / dt;
+      n.speed = speed;
+      n.effort += (clamp(0.15 + accel * 0.35, 0, 1) - n.effort) * damp(3, dt);
+      // a lazy automatic: up a gear past ~3000 rpm, down below ~1500
+      const gears = [1, 0.65, 0.46, 0.34, 0.26];
+      let rpm = idle + speed * ratio * gears[n.gear];
+      if (rpm > 2700 + n.effort * 1500 && n.gear < gears.length - 1) n.gear++;
+      else if (rpm < 1500 && n.gear > 0) n.gear--;
+      rpm = Math.min(idle + speed * ratio * gears[n.gear], 5000);
+      // Doppler by hand, from how fast the car and the listener close on each other
+      const ux = (c.x - e.x) / Math.max(d, 0.1), uz = (c.z - e.z) / Math.max(d, 0.1);
+      const away = (c.vx - e.vx) * ux + (c.vz - e.vz) * uz;
+      const doppler = clamp(343 / (343 + away), 0.85, 1.18);
+      n.voice.set(rpm, n.effort, doppler, c.kind.includes('bus') ? 0.7 : 0.5);
+    }
+    // the distant roar: louder the more traffic is about
+    const busy = cars.reduce((k, c) => k + (Math.hypot(c.x - e.x, c.z - e.z) < 150 ? 1 : 0), 0);
+    this.rumble.gain.gain.setTargetAtTime(Math.min(0.07, 0.012 + busy * 0.003), ctx.currentTime, 0.5);
+  }
+
+  /**
+   * Another driver's horn at (x, z): a tap, two taps, or a long blast. Played from the steady note (the clip's
+   * press is a thump that, cut short, sounded like a bark), shaped so it starts and stops cleanly, placed where
+   * the car is and muffled with distance as a real one is. A few at a time across the street, never a chorus.
+   */
+  honk(x: number, z: number, kind: 'tap' | 'double' | 'long', pitch: number) {
     const buf = this.clips.get('horn.wav');
+    const distance = Math.hypot(x - this.ear.x, z - this.ear.z);
     if (!this.ctx || !buf || distance > 150) return;
     const t = this.ctx.currentTime;
-    if (t < this.npcHornFree) return;
+    this.npcHorns = this.npcHorns.filter((end) => end > t);
+    if (this.npcHorns.length >= NPC_HORNS) return;
     const notes = kind === 'tap' ? [[0, 0.22]] : kind === 'double' ? [[0, 0.16], [0.28, 0.2]] : [[0, 1 + Math.random() * 0.5]];
     const end = notes[notes.length - 1][0] + notes[notes.length - 1][1];
-    this.npcHornFree = t + end + 1.2;
+    this.npcHorns.push(t + end + 0.3);
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.loop = true;
@@ -230,15 +336,16 @@ export class Sound {
     muffle.type = 'lowpass';
     muffle.frequency.value = 9000 / (1 + distance / 30);
     const gain = this.ctx.createGain();
-    const level = 0.5 / (1 + distance / 15);
     gain.gain.setValueAtTime(0, t);
     for (const [at, length] of notes) {
-      gain.gain.setTargetAtTime(level, t + at, 0.008);
+      gain.gain.setTargetAtTime(0.9, t + at, 0.008);
       gain.gain.setTargetAtTime(0, t + at + length, 0.015);
     }
-    src.connect(muffle).connect(gain).connect(this.bus);
+    const panner = this.place(x, z, 8);
+    src.connect(muffle).connect(gain).connect(panner);
     src.start(t, HORN_LOOP);
     src.stop(t + end + 0.1);
+    src.onended = () => panner.disconnect();
   }
 
   /**

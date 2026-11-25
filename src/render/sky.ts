@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
-import { pmremTexture } from 'three/tsl';
+import { exp, fog, max, positionView, positionWorld, pmremTexture, smoothstep, uniform } from 'three/tsl';
 
 // A clear blue day with a light haze at the horizon, a warm dusk, and a blue-black night lit by sodium lamps.
 const SUN_PEAK = 52; // degrees above the horizon at noon
@@ -73,7 +73,7 @@ export class DayNight {
   readonly lightDir = new THREE.Vector3();
   private sky: SkyMesh;
   private hemi: THREE.HemisphereLight;
-  private fog: THREE.FogExp2;
+  private fogColour = uniform(HAZE.clone());
   private stars: THREE.Points;
   private envs: THREE.Texture[];
   /** lighting environment as a shader input whose texture is swapped in place; see update() */
@@ -82,7 +82,7 @@ export class DayNight {
   private renderer: THREE.WebGPURenderer;
   private lastNight = -1;
 
-  constructor(scene: THREE.Scene, renderer: THREE.WebGPURenderer, hour: number, speed: number, fogDensity = 0.00115) {
+  constructor(scene: THREE.Scene, renderer: THREE.WebGPURenderer, hour: number, speed: number, fogDensity = 0.00115, drawDistance = 400) {
     this.scene = scene;
     this.renderer = renderer;
     this.hour = hour;
@@ -108,9 +108,14 @@ export class DayNight {
     this.env = pmremTexture(this.envs[0]);
     scene.environmentNode = this.env;
 
-    this.fog = new THREE.FogExp2(HAZE.getHex(), fogDensity);
-    scene.fog = this.fog;
-    this.hemi = new THREE.HemisphereLight(0xcfe0f5, 0x7a6f5c, 0.5);
+    // Aerial haze rather than a flat grey wash: thin near the ground's own distance, thinner still up the side of a
+    // tower, so the street keeps its colour to a few hundred metres and skylines stand against the sky. A separate
+    // ramp over the last part of the draw distance still hides where the city stops.
+    const d = positionView.length();
+    const haze = exp(d.mul(fogDensity * 0.6).pow(2).negate()).oneMinus().mul(exp(max(positionWorld.y, 0).div(-70)));
+    scene.fogNode = fog(this.fogColour, max(haze, smoothstep(drawDistance * 0.6, drawDistance, d)));
+    // the ground half of the sky light is warm dust bounced off the street, the sky half the blue overhead
+    this.hemi = new THREE.HemisphereLight(0xc4d0de, 0xc88a62, 0.5);
     this.sun = new THREE.DirectionalLight(0xffe2bd, 4.6);
     scene.add(this.hemi, this.sun, this.sun.target);
     this.update(0);
@@ -139,7 +144,7 @@ export class DayNight {
     // One shadow-casting light: the sun by day, the moon by night, swapped while both are near zero.
     if (elevation > -3) {
       this.lightDir.copy(dir);
-      this.sun.intensity = 3.6 * smooth(-3, 10, elevation);
+      this.sun.intensity = 5 * smooth(-3, 10, elevation);
       this.sun.color.copy(SUN_LOW).lerp(SUN_HIGH, smooth(4, 30, elevation));
     } else {
       sunAt(this.hour + 12, this.lightDir);
@@ -150,16 +155,17 @@ export class DayNight {
     this.sun.position.copy(this.sun.target.position).addScaledVector(this.lightDir, 400);
 
     const dusk = 1 - Math.abs(smooth(-8, 14, elevation) * 2 - 1);
-    this.fog.color.copy(HAZE).lerp(NIGHT, n).lerp(DUSK, dusk * 0.6);
+    this.fogColour.value.copy(HAZE).lerp(NIGHT, n).lerp(DUSK, dusk * 0.6);
     // sky fill: enough that shaded walls keep their colour by day, a dim moonlit blue by night
-    this.hemi.intensity = 0.55 - 0.4 * n;
-    this.hemi.color.setHex(0xcfd8e6).lerp(MOON, n);
+    this.hemi.intensity = 0.45 - 0.3 * n;
+    this.hemi.color.setHex(0xc4d0de).lerp(MOON, n);
     // Swapping scene.environment rebuilt every material's shader (half a second frozen at each dusk and dawn);
     // changing the texture behind one environment node is just a new binding.
     const env = this.envs[elevation > 12 ? 0 : elevation > -6 ? 1 : 2];
     if (this.env.value !== env) this.env.value = env;
-    this.scene.environmentIntensity = 0.35 - 0.1 * n;
-    this.renderer.toneMappingExposure = 1 + 0.6 * n;
+    this.scene.environmentIntensity = 0.28 - 0.1 * n;
+    // ACES already lifts by 1/0.6; night needs more so lamps and windows carry the street
+    this.renderer.toneMappingExposure = 0.8 + 0.45 * n;
     (this.stars.material as THREE.PointsMaterial).opacity = smooth(0.6, 1, n);
 
     if (Math.abs(n - this.lastNight) > 0.002) {
