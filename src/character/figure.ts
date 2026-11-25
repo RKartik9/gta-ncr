@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { luminance, materialColor, mix as blend, step, uniform } from 'three/tsl';
 import { clone } from 'three/addons/utils/SkeletonUtils.js';
 import { type Pose, applyPose, loadFigure } from '../vehicle/rider.ts';
 import { ARM_L, ARM_R, CHEST, FORE_L, FORE_R, HEAD, PELVIS, SHIN_L, SHIN_R, THIGH_L, THIGH_R } from './ragdoll.ts';
@@ -111,6 +112,9 @@ export class Figure {
   private inner: THREE.Object3D;
   private bones: THREE.Object3D[];
   private scale = 1;
+  /** what they are wearing, as on the pavement (pedestrians.ts dyes the same way); black is the clothes as made */
+  private top = uniform(new THREE.Color(0, 0, 0));
+  private bottom = uniform(new THREE.Color(0, 0, 0));
 
   constructor(source: Source) {
     this.source = source;
@@ -123,6 +127,15 @@ export class Figure {
         // its bounds are where it stood when it was made, not where its bones have carried it since
         mesh.frustumCulled = false;
         if (!Array.isArray(mesh.material) && /teeth/i.test(mesh.material.name)) mesh.visible = false;
+        const m = mesh.material as THREE.MeshStandardMaterial;
+        const dye = /Outfit_Top/.test(m.name) ? this.top : /Outfit_Bottom/.test(m.name) ? this.bottom : null;
+        if (dye) {
+          // this figure's own clothes, dyed: the texture's light and shade, the copy's colour
+          const node = new THREE.MeshStandardNodeMaterial();
+          node.copy(m as unknown as THREE.MeshStandardNodeMaterial);
+          node.colorNode = blend(materialColor, luminance(materialColor).mul(1.7).mul(dye).min(1), step(0.001, dye.x.add(dye.y).add(dye.z)).mul(0.85));
+          mesh.material = node;
+        }
       }
       if (!(o as THREE.Bone).isBone) return;
       // the copy is taken from a figure that may have been left in any pose
@@ -136,6 +149,12 @@ export class Figure {
     this.group.add(this.inner);
     this.setHeight(1.75);
     this.snap(source.poses.stand);
+  }
+
+  /** Dressed as someone on the pavement was; null or black for the clothes as made. */
+  dress(top: THREE.Color | null, bottom: THREE.Color | null) {
+    this.top.value.copy(top ?? new THREE.Color(0, 0, 0));
+    this.bottom.value.copy(bottom ?? new THREE.Color(0, 0, 0));
   }
 
   /** Stands the figure `metres` tall. */

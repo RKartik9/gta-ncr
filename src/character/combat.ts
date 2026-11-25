@@ -11,6 +11,7 @@ import { Fighter, type Move, type Ring, type Thump, wrap } from './fighter.ts';
 import { Figure, type Source, loadSource } from './figure.ts';
 import { CHEST, HEAD } from './ragdoll.ts';
 import { Stick } from './stick.ts';
+import { Armoury, GUNS, type GunName } from './guns.ts';
 
 export type { Thump };
 
@@ -38,10 +39,14 @@ export interface Hooks {
   sound(kind: Thump, strength: number, distance: number, voice?: number): void;
   /** the camera is shaken, by about this many metres */
   shake(amount: number): void;
+  /** a rifle's kick: the aim thrown up by `pitch` and aside by `yaw`, radians */
+  recoil(pitch: number, yaw: number): void;
   /** the player has been hurt, 0 to 1: the edges of the screen go red */
   hurt(amount: number): void;
   /** the player has been dragged out of the car: the game is on foot now, without their asking */
   pulledOut(): void;
+  /** the player has walked to the door and is back in the car */
+  entered(): void;
   say(text: string): void;
   rumble(strength: number, ms: number): void;
   /** the screen goes dark, and comes back */
@@ -70,7 +75,7 @@ interface Npc {
 /** what the camera will not go behind: not the road, and not people */
 const SIGHT_GROUPS = (0x0200 << 16) | (0xffff & ~0x00c2);
 
-const _p = new THREE.Vector3(), _j = new THREE.Vector3(), _door = new THREE.Vector3();
+const _p = new THREE.Vector3(), _j = new THREE.Vector3(), _door = new THREE.Vector3(), _hit = new THREE.Vector3(), _line = new THREE.Vector3();
 const NO_TURN = { x: 0, y: 0, z: 0, w: 1 };
 
 /**
@@ -114,6 +119,19 @@ export class Combat implements Ring {
   private drips = 0;
   private room = new RAPIER.Capsule(0.55, 0.26);
   private ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
+  /** the player's rifles: which is in hand (null: fists), rounds left in each, and the trigger's timing */
+  readonly armoury: Armoury;
+  weapon: GunName | null = null;
+  private rounds: Record<GunName, number> = { m416: GUNS.m416.mag, akm: GUNS.akm.mag };
+  private cooldown = 0;
+  private reloading = 0;
+  private wasHeld = false;
+  /** where the player is aiming (the camera's line), and the rifle's muzzle */
+  private aim = new THREE.Vector3(0, 0, 1);
+  private muzzle = new THREE.Vector3();
+  /** seconds into walking to the car door to get in, or -1 */
+  private entering = -1;
+  private doorAt = new THREE.Vector3();
 
   constructor(scene: THREE.Scene, world: RAPIER.World, people: Pedestrians, traffic: Traffic, count: number, hooks: Hooks) {
     this.scene = scene;
@@ -126,6 +144,7 @@ export class Combat implements Ring {
     for (const f of this.fighters) for (const b of [f.body.body, ...f.doll.parts]) this.owner.set(b.handle, f);
     this.stick = new Stick(scene, world);
     this.blood = new Blood(scene);
+    this.armoury = new Armoury(scene);
     this.player.toughness = 1.6;
     people.onStruck = (w, vx, vz) => this.runDown(w, vx, vz);
     traffic.onWreck = (car) => {
@@ -157,6 +176,7 @@ export class Combat implements Ring {
     if (!source) return null;
     const figure = this.spare.get(file)?.pop() ?? new Figure(source);
     figure.setHeight(height);
+    figure.dress(null, null);
     this.scene.add(figure.group);
     return figure;
   }
@@ -216,7 +236,10 @@ export class Combat implements Ring {
     }
     this.scene.add(figure.group);
     this.player.spawn(figure, at.x, at.y, at.z, car.heading);
+    this.player.stepOut();
     this.player.toughness = 1.6;
+    this.player.gun = !!this.weapon;
+    this.showGun();
     this.onFoot = true;
     this.outCold = 0;
     this.carHits = 0;
@@ -233,13 +256,27 @@ export class Combat implements Ring {
     return Math.abs(along) < car.spec.length / 2 + 0.4 && Math.abs(across) < car.spec.width / 2 + REACH;
   }
 
-  /** Back in the car. The stick, if in hand, goes back on the boot on the way. */
+  /**
+   * Back in the car: a few steps to the door first, then in (hooks.entered). The stick, if in hand, goes back on
+   * the boot on the way. False if they cannot get in from here.
+   */
   enter() {
-    if (!this.canEnter) return false;
+    if (!this.canEnter || this.entering >= 0 || !this.car) return false;
+    const car = this.car, side = car.bike || car.spec.cockpitCamera[0] >= 0 ? 1 : -1;
+    // the nearer door
+    const a = this.door(car, side, new THREE.Vector3()), b = this.door(car, -side, new THREE.Vector3()), p = this.player.pos;
+    this.doorAt.copy(Math.hypot(a.x - p.x, a.z - p.z) <= Math.hypot(b.x - p.x, b.z - p.z) ? a : b);
+    this.entering = 0;
+    return true;
+  }
+
+  private getIn() {
+    this.entering = -1;
     if (this.player.armed) this.stick.toCar();
     this.player.despawn()?.group.removeFromParent();
     this.onFoot = false;
-    return true;
+    this.armoury.show(null);
+    this.hooks.entered();
   }
 
   /** How fast the player is going on foot, m/s over the ground. */
@@ -293,6 +330,130 @@ export class Combat implements Ring {
       me.armed = true;
       this.stick.toHand();
     }
+  }
+
+  /** Fists (null) or a rifle in the player's hands. The stick goes back on the boot first. */
+  equip(name: GunName | null) {
+    const me = this.player;
+    if (!this.onFoot || !me.standing || name === this.weapon) return;
+    if (name && me.armed) {
+      me.armed = false;
+      this.stick.toCar();
+    }
+    this.weapon = name;
+    this.reloading = 0;
+    me.gun = !!name;
+    this.showGun();
+    this.hooks.sound('reload', 0.5, 0);
+    this.hooks.say(name ? GUNS[name].label : 'Fists');
+  }
+
+  reload() {
+    const name = this.weapon;
+    if (!name || !this.onFoot || this.reloading > 0 || this.rounds[name] === GUNS[name].mag) return;
+    this.reloading = GUNS[name].reload;
+    this.hooks.sound('reload', 1, 0);
+    this.showGun();
+  }
+
+  private showGun() {
+    const on = this.onFoot && this.weapon && this.player.standing ? this.weapon : null;
+    this.armoury.show(on, on ? this.rounds[on] : 0, this.reloading > 0);
+  }
+
+  /**
+   * Every frame on foot: the trigger (`held`), and the line the camera looks along from `from` in `dir`, which is
+   * where the rounds go. Automatic: held down, it keeps firing at the rifle's rate.
+   */
+  trigger(held: boolean, from: THREE.Vector3, dir: THREE.Vector3, dt: number) {
+    this.aim.copy(dir);
+    const name = this.weapon, me = this.player;
+    this.cooldown -= dt;
+    if (this.reloading > 0 && (this.reloading -= dt) <= 0) {
+      this.rounds[name!] = GUNS[name!].mag;
+      this.showGun();
+    }
+    const pressed = held && !this.wasHeld;
+    this.wasHeld = held;
+    if (!name || !this.onFoot || !me.standing || me.state !== 'move' || !held || this.cooldown > 0 || this.reloading > 0) return;
+    if (this.rounds[name] <= 0) {
+      if (pressed) this.hooks.sound('click', 1, 0);
+      this.reload();
+      return;
+    }
+    this.rounds[name]--;
+    this.cooldown = GUNS[name].interval;
+    this.shoot(from, dir, GUNS[name]);
+    this.showGun();
+  }
+
+  private shoot(from: THREE.Vector3, dir: THREE.Vector3, gun: (typeof GUNS)[GunName]) {
+    const me = this.player;
+    const line = _line.copy(dir).add(_j.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(gun.spread * 2)).normalize();
+    this.ray.origin = from;
+    this.ray.dir = line;
+    const hit = this.world.castRay(this.ray, 150, true, undefined, STRIKE_GROUPS, undefined, me.body.body);
+    let dist = hit?.timeOfImpact ?? 150;
+    // the road is not something a fist lands on, so the ray goes through it: stop it there
+    if (line.y < -1e-3) dist = Math.min(dist, (me.pos.y + 0.03 - from.y) / line.y);
+    // someone walking past in the way, first
+    let walker: Walker | null = null;
+    for (let d = 1.5; d < dist; d += 0.3) {
+      _p.copy(from).addScaledVector(line, d);
+      walker = this.people.strikeAt(_p.x, _p.y - me.pos.y, _p.z, 0.02);
+      if (walker) {
+        dist = d;
+        break;
+      }
+    }
+    const at = _hit.copy(from).addScaledVector(line, dist), away = this.distance(at.x, at.z);
+    let target: Fighter | null = null;
+    if (walker) {
+      target = this.promote(walker);
+      if (!target) this.people.knock(walker, line.x * 3, line.z * 3);
+    } else if (hit) {
+      const body = hit.collider.parent();
+      target = this.owner.get(body?.handle ?? -1) ?? null;
+      if (!target) {
+        this.hooks.sound('ricochet', 1, away);
+        if (body?.isDynamic()) {
+          body.applyImpulseAtPoint(_j.copy(line).multiplyScalar(gun.push * 3), at, true);
+          this.traffic.provoke(body);
+        }
+      }
+    }
+    if (target && target !== me) this.shot(target, at, line, gun);
+    this.armoury.fired(this.muzzle, _j.copy(at).sub(this.muzzle).normalize(), at);
+    this.hooks.sound(gun.name, 1, 0);
+    this.hooks.recoil(gun.climb * (0.8 + Math.random() * 0.4), (Math.random() - 0.5) * gun.climb * 0.8);
+    this.hooks.shake(0.015);
+    this.hooks.rumble(0.25, 50);
+    // gunfire: the street runs, and nobody comes to fight it out
+    this.people.scare(me.pos.x, me.pos.z, 45, () => false);
+    for (const [f, npc] of this.npcs) if (f.health > 0 && this.distance(f.pos.x, f.pos.z) < 45) npc.brain.mode = 'flee';
+  }
+
+  /** A round lands on `f` at `at`, going along `line`: the head is fatal, the legs take half, and it bleeds. */
+  private shot(f: Fighter, at: THREE.Vector3, line: THREE.Vector3, gun: (typeof GUNS)[GunName]) {
+    const me = this.player, hips = f.figure?.hipHeight ?? 0.95;
+    const height = (at.y - f.pos.y) / (hips / 0.95);
+    const zone = !f.standing ? 'body' : height > 1.42 ? 'head' : height > 0.75 ? 'body' : 'legs';
+    const alive = f.health > 0;
+    f.hurt(zone === 'head' ? 500 : zone === 'legs' ? gun.damage * 0.5 : gun.damage);
+    f.hitBy = me;
+    const push = _j.copy(line).multiplyScalar(gun.push * (zone === 'head' ? 1.4 : 1));
+    if (f.doll.active) f.doll.hit(at, push);
+    else if (f.health <= 0) f.fall(at, push);
+    else f.takeHit(at, push.multiplyScalar(0.6), me);
+    const away = this.distance(at.x, at.z);
+    this.hooks.sound('hit', zone === 'head' ? 1.4 : 1, away);
+    this.blood.spray(at, _j.copy(line), zone === 'head' ? 45 : 26, f.pos.y);
+    if (alive && f.health > 0 && f.unhurtVoice > 0.4) {
+      f.unhurtVoice = 0;
+      this.hooks.sound('pain', 1.3, away, f.voice);
+    }
+    const npc = this.npcs.get(f);
+    if (npc) npc.brain.mode = 'flee';
   }
 
   /** Before each physics step. */
@@ -366,7 +527,11 @@ export class Combat implements Ring {
       const stood = target.standing;
       const hit = target.takeHit(at, _j, by);
       this.hooks.sound(hit.blocked ? 'block' : m.sound, size, away);
-      if (!hit.blocked && hit.damage > 4) this.hooks.sound('pain', Math.min(1.4, hit.damage / 20), away, target.voice);
+      // not a cry at every blow: someone being hit mostly takes it with a grunt of breath, and cries out at a bad one
+      if (!hit.blocked && hit.damage > 4 && target.unhurtVoice > 0.5 && (hit.damage > 18 || Math.random() < 0.55)) {
+        target.unhurtVoice = 0;
+        this.hooks.sound(hit.damage > 18 ? 'pain' : 'grunt', Math.min(1.4, hit.damage / 18), away, target.voice);
+      }
       // the picture holds a beat on a blow that really lands
       by.freeze = target.freeze = hit.blocked ? 0.03 : Math.min(0.12, 0.04 + size / 700);
       if (!hit.blocked && hit.damage > 3) {
@@ -428,6 +593,7 @@ export class Combat implements Ring {
     const [file, height] = this.people.kindOf(w), figure = this.figureFor(file, height);
     if (!figure) return null;
     this.people.take(w);
+    figure.dress(w.top, w.bottom);
     slot.spawn(figure, w.x, 0, w.z, w.yaw);
     slot.voice = this.voiceOf(file);
     const brain = new Brain(w.nerve);
@@ -442,6 +608,7 @@ export class Combat implements Ring {
     if (!slot || !car) return false;
     const [file, height] = this.people.kindOf(w), figure = this.figureFor(file, height);
     if (!figure) return false;
+    figure.dress(w.top, w.bottom);
     // set down just clear of the bumper that hit them, already moving with it: the car and the road do the rest
     const speed = Math.hypot(vx, vz), dx = vx / speed, dz = vz / speed, c = car.body.translation();
     const across = clamp((w.x - c.x) * dz - (w.z - c.z) * dx, -car.spec.width / 2, car.spec.width / 2);
@@ -468,6 +635,14 @@ export class Combat implements Ring {
     const from = running ? this.where(_p) : undefined;
     if (npc.walker) this.people.give(npc.walker, x, z, yaw, from);
     else this.people.adopt(npc.file, x, z, yaw, from);
+  }
+
+  /** A body taken away: the figure back on the shelf, and whoever they were gone from the street for good. */
+  private bury(f: Fighter) {
+    const npc = this.npcs.get(f);
+    this.putBack(f.despawn());
+    this.npcs.delete(f);
+    if (npc?.walker) this.people.forget(npc.walker);
   }
 
   /** A driver whose car the player has hit gets out, once it has stopped. */
@@ -512,6 +687,13 @@ export class Combat implements Ring {
       const it = me.intent;
       it.vx = push > 0.1 ? (mx / Math.min(1, push)) * pace : 0;
       it.vz = push > 0.1 ? (mz / Math.min(1, push)) * pace : 0;
+      if (this.entering >= 0) {
+        // walking to the door, whatever the hands are doing; in once there, or after a moment however near
+        this.entering += dt;
+        const dx = this.doorAt.x - me.pos.x, dz = this.doorAt.z - me.pos.z, d = Math.hypot(dx, dz);
+        if (d < 0.3 || this.entering > 0.7 || !me.standing) this.getIn();
+        else [it.vx, it.vz] = [(dx / d) * Math.min(JOG, d * 6), (dz / d) * Math.min(JOG, d * 6)];
+      }
       it.block = input.block;
       // squared up, they face whoever is nearest in front of them, or else where they are looking
       it.face = null;
@@ -525,6 +707,8 @@ export class Combat implements Ring {
           if (d < best && Math.abs(wrap(Math.atan2(dx, dz) - look)) < 1.2) [best, it.face] = [d, Math.atan2(dx, dz)];
         }
       }
+      // a rifle points where the camera looks, so the body does too
+      if (this.weapon) it.face = look;
       if (me.unhurt > 6 && me.health > 0) me.health = Math.min(100, me.health + 4 * dt);
 
       // knocked down with the stick in hand: it goes its own way
@@ -540,9 +724,14 @@ export class Combat implements Ring {
       }
     }
 
-    // a kick is a stamp for whoever has someone lying just in front of them
+    // a kick is a stamp for whoever has someone lying just in front of them, a knee for whoever has someone right up against them
     for (const f of this.fighters) {
       if (!f.on || !f.standing) continue;
+      f.close = this.fighters.some((o) => {
+        if (o === f || !o.on || !o.standing) return false;
+        const dx = o.pos.x - f.pos.x, dz = o.pos.z - f.pos.z, d = Math.hypot(dx, dz);
+        return d < 0.95 && (dx * Math.sin(f.yaw) + dz * Math.cos(f.yaw)) / d > 0.6;
+      });
       f.stompable = this.fighters.some((o) => {
         if (o === f || !o.on || o.state !== 'down') return false;
         const head = o.doll.parts[CHEST].translation(), dx = head.x - f.pos.x, dz = head.z - f.pos.z, d = Math.hypot(dx, dz);
@@ -569,15 +758,18 @@ export class Combat implements Ring {
     const scene = { player: me, x: p.x, z: p.z, onFoot: this.onFoot, cx: c.x, cz: c.z };
     for (const [f, npc] of this.npcs) {
       const away = Math.hypot(f.pos.x - p.x, f.pos.z - p.z);
+      const dead = f.state === 'down' && f.health <= 0;
+      if (dead && dt > 0) npc.out += dt;
+      // The dead stay dead. The body lies where it fell for a while, then it and the blood round it are taken away:
+      // sooner once the player has walked off, and never while they stand over it.
+      if (dead && ((npc.out > 20 && away > 25) || npc.out > 60 || away > 75)) {
+        this.blood.clean(f.pos.x, f.pos.z, 3);
+        this.bury(f);
+        continue;
+      }
       if (away > 75) {
         this.release(f, false);
         continue;
-      }
-      if (dt > 0 && f.state === 'down' && f.health <= 0 && (npc.out += dt) > 10) {
-        // out cold for a while, then up, and off: they have had enough
-        f.health = 35;
-        npc.out = 0;
-        npc.brain.mode = 'flee';
       }
       if (dt > 0 && f.standing && npc.brain.think(f, dt, scene) && f.state === 'move') {
         this.release(f, npc.brain.mode === 'flee');
@@ -588,7 +780,15 @@ export class Combat implements Ring {
     if (me.on) {
       me.update(dt, blend, this);
       if (me.armed) this.stick.hold(me.hand, me.stickDir);
+      // the rifle in the right hand along the aim, put away while they are down
+      const shown = this.onFoot && !!this.weapon && me.standing;
+      if (shown !== this.armoury.group.visible) {
+        this.armoury.group.visible = shown;
+        this.showGun();
+      }
+      if (shown) this.armoury.hold(me.hand, this.aim, this.muzzle);
     }
+    this.armoury.update(dt);
     this.stick.update();
 
     this.obstacles.length = 0;

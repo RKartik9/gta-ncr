@@ -103,6 +103,11 @@ export class Blood {
     this.splat(x, ground, z, 0.05, size, 1 + Math.random() * 0.3, Math.random() * 6);
   }
 
+  /** Washed away: every stain within `r` metres of (x, z) fades out over the next few seconds. */
+  clean(x: number, z: number, r: number) {
+    for (const s of this.splats) if (s.on && Math.hypot(s.x - x, s.z - z) < r) s.age = Math.max(s.age, DRIES + 6);
+  }
+
   private splat(x: number, ground: number, z: number, r: number, to: number, stretch: number, yaw: number) {
     const s = this.splats[this.nextSplat++ % SPLATS];
     // each a hair above the last, so overlapping stains do not flicker through one another

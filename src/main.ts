@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { CITY, QUALITY_NAMES, type QualityName, detectGpu, pickQuality, query, saveQuality, savedQuality } from './config.ts';
 import { type Progress, clearProgress, loadProgress, saveProgress } from './save.ts';
+import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
 import { backendName, createPipeline, createRenderer, resolutionGovernor, setupShadows } from './render/renderer.ts';
 import { DayNight, onNight } from './render/sky.ts';
 import { TyreFx } from './render/tyreFx.ts';
@@ -91,9 +92,11 @@ async function boot() {
   // Cars load once and are kept, so switching back is instant.
   const models = new Map<string, Promise<CarModel>>();
   const hud = new Hud(grid.attribution, (mode) => setCamera(mode), () => void switchCar());
-  const lampLights = new LampLights(scene, [], quality.lampLights);
+  // with clustered lighting (WebGPU) point lights are cheap: the street lamps and headlights further out light the road too
+  const clustered = renderer.lighting instanceof ClusteredLighting;
+  const lampLights = new LampLights(scene, [], quality.lampLights, clustered ? 24 : 0);
   // in the scene from the start, so its shaders are built behind the loading screen
-  const traffic = new Traffic(scene, world, quality.traffic, quality.drawDistance);
+  const traffic = new Traffic(scene, world, quality.traffic, quality.drawDistance, clustered ? Math.round(quality.traffic / 2) : 0);
   const tyreFx = new TyreFx(scene, quality.name === 'low' ? 80 : 160);
   // Bombay's pavements are far busier than Delhi's
   const pedestrians = new Pedestrians(scene, world, Math.round(quality.pedestrians * (CITY === 'mumbai' ? 1.8 : 1)));
@@ -103,6 +106,8 @@ async function boot() {
     shake: (amount) => director.shake(amount),
     hurt: (amount) => hud.flash(amount),
     pulledOut: () => setFoot(true),
+    entered: () => setFoot(false),
+    recoil: (pitch, yaw) => director.recoil(pitch, yaw),
     say: (text) => hud.say(text),
     rumble: (strength, ms) => keys.rumble(strength, ms),
     fade: (on) => hud.fade(on),
@@ -249,7 +254,8 @@ async function boot() {
   }
 
   const sound = new Sound();
-  const earAhead = new THREE.Vector3();
+  const earAhead = new THREE.Vector3(), aimDir = new THREE.Vector3();
+  let warmFrames = 0;
   sound.setCar(model.spec);
   const music = new Music();
   music.resumeOnGesture();
@@ -260,7 +266,8 @@ async function boot() {
     director.next();
     hud.setCamera(director.mode);
   });
-  CAMERA_MODES.forEach((mode, i) => keys.on(`Digit${i + 1}`, () => !combat.onFoot && setCamera(mode)));
+  // at the wheel the number keys pick a camera; on foot, 1 is fists, 2 the M416 and 3 the AKM
+  CAMERA_MODES.forEach((mode, i) => keys.on(`Digit${i + 1}`, () => (combat.onFoot ? i < 3 && combat.equip(([null, 'm416', 'akm'] as const)[i]) : setCamera(mode))));
   // Out of the car and back in. On foot the camera goes over the player's shoulder and the mouse is theirs to look and hit with.
   const setFoot = (on: boolean) => {
     director.setOnFoot(on, vehicle.heading);
@@ -268,9 +275,8 @@ async function boot() {
   };
   keys.on('KeyF', () => {
     if (hud.menuOpen || bigmap.open) return;
-    if (combat.onFoot) {
-      if (combat.enter()) setFoot(false);
-    } else if (Math.abs(vehicle.speed) > 2) hud.say('Stop first');
+    if (combat.onFoot) combat.enter();
+    else if (Math.abs(vehicle.speed) > 2) hud.say('Stop first');
     else if (combat.exit()) setFoot(true);
   });
   keys.on('KeyE', () => combat.interact());
@@ -309,7 +315,7 @@ async function boot() {
   keys.on('KeyM', () => toggleMap());
   // on the map, the controller's face buttons work the waypoint instead of the car
   keys.on('PadA', () => bigmap.open && bigmap.pickCentre());
-  keys.on('KeyR', () => (bigmap.open ? toggleMap(false) : combat.onFoot ? combat.kick() : resetCar()));
+  keys.on('KeyR', () => (bigmap.open ? toggleMap(false) : combat.onFoot ? (combat.weapon ? combat.reload() : combat.kick()) : resetCar()));
   // held: the horn, read each frame. On foot it is the controller's X, which takes the stick and puts it back.
   keys.on('KeyH', () => (bigmap.open ? bigmap.onWaypoint(null) : combat.interact()));
   keys.on('KeyN', () => {
@@ -603,6 +609,12 @@ async function boot() {
     model.group.position.lerpVectors(previous.p, current.p, blend);
     model.group.position.y += ROAD_HEIGHT;
     model.group.quaternion.slerpQuaternions(previous.q, current.q, blend);
+    if (foot) {
+      // the rifle: rounds go down the middle of the screen; the right button brings it up to the eye
+      camera.getWorldDirection(aimDir);
+      combat.trigger(!paused && !hud.menuOpen && !bigmap.open && keys.held('Mouse0'), camera.position, aimDir, paused ? 0 : dt);
+      director.aiming = !!combat.weapon && keys.held('Mouse2');
+    }
     combat.update(paused ? 0 : dt, blend, keys.foot(), director.facing);
     // cars stop for anyone on foot in their lane: the people on the pavement, and whoever is out here fighting
     traffic.walkers = combat.obstacles.length ? [...pedestrians.positions, ...combat.obstacles] : pedestrians.positions;
@@ -670,7 +682,22 @@ async function boot() {
       hud.setRoad(hit && hit.distance < 25 ? hit.road.name! : '');
     }
 
+    // compileAsync makes the main pass's shaders, not the shadow's or the ambient occlusion's: the figures and the
+    // rifles are drawn for real for two frames, a thousandth of their size in front of the camera, so the first time
+    // the player gets out is not a quarter-second stall
+    const warming = warmFrames > 0 && !combat.onFoot;
+    if (warming) {
+      camera.getWorldDirection(aimDir);
+      combat.warm.position.copy(camera.position).addScaledVector(aimDir, 5);
+      combat.warm.scale.setScalar(0.001);
+      scene.add(combat.warm);
+      combat.armoury.warm(combat.warm.position);
+    }
     pipeline.render();
+    if (warming && --warmFrames === 0) {
+      scene.remove(combat.warm);
+      combat.armoury.warm(null);
+    }
     governor(dt, performance.now() - began);
 
     if (firstFrame) {
@@ -678,7 +705,7 @@ async function boot() {
       hideLoading();
       prefetchNext();
       // the people who can be fought, drawn once out of sight: nobody waits for shaders at the first punch
-      void combat.ready.then(() => renderer.compileAsync(combat.warm, camera, scene)).catch((err) => console.warn('Figures not readied', err));
+      void combat.ready.then(() => renderer.compileAsync(combat.warm, camera, scene)).then(() => (warmFrames = 2)).catch((err) => console.warn('Figures not readied', err));
       if (gpu.kind === 'software' || otherCard) hud.say(`Drawing on ${gpu.name}: slow graphics. Esc › Graphics says how to use a faster card.`, 9000);
     }
     perf.frames++;

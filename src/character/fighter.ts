@@ -2,6 +2,9 @@ import * as THREE from 'three/webgpu';
 import type RAPIER from '@dimforge/rapier3d-compat';
 import { BODY_MASS, CHEST, CharacterBody, PELVIS, Ragdoll } from './ragdoll.ts';
 import { type Baked, type Figure, HIPS, LEFT_HAND, NECK, HEAD_BONE, RIGHT_FOOT, RIGHT_HAND, SPINE, SPINE1, SPINE2, UPPER, blank, mix } from './figure.ts';
+
+/** the joints an elbow and a knee land with */
+const RIGHT_ELBOW = 12, RIGHT_KNEE = 18;
 import { CROUCH_DROP, FRAMES, type PoseName, STICK_AIM } from './poses.ts';
 import type { V3 } from '../vehicle/rider.ts';
 import { clamp, damp } from '../util.ts';
@@ -14,9 +17,9 @@ import { clamp, damp } from '../util.ts';
 export type State = 'move' | 'cock' | 'strike' | 'recover' | 'stagger' | 'dodge' | 'down' | 'getup';
 
 /** The sounds a fight makes. */
-export type Thump = 'swing' | 'punch' | 'kick' | 'stick' | 'block' | 'thud' | 'body' | 'grunt' | 'pain';
+export type Thump = 'swing' | 'punch' | 'kick' | 'stick' | 'block' | 'thud' | 'body' | 'grunt' | 'pain' | 'm416' | 'akm' | 'hit' | 'ricochet' | 'click' | 'reload';
 
-export type MoveName = 'jab' | 'cross' | 'hook' | 'uppercut' | 'kick' | 'roundhouse' | 'stomp' | 'swing' | 'chop';
+export type MoveName = 'jab' | 'cross' | 'hook' | 'uppercut' | 'elbow' | 'kick' | 'knee' | 'roundhouse' | 'stomp' | 'swing' | 'chop';
 
 /** A blow, and what goes into it. */
 export interface Move {
@@ -49,17 +52,19 @@ export interface Move {
 
 const move = (m: Omit<Move, 'full' | 'heavy' | 'radius'> & Partial<Pick<Move, 'full' | 'heavy' | 'radius'>>): Move => ({ full: false, heavy: false, radius: 0.13, ...m });
 export const MOVES: Record<MoveName, Move> = {
-  jab: move({ name: 'jab', cock: 'guard', hit: 'jab', time: [0.07, 0.1, 0.17], limb: LEFT_HAND, mass: 2.5, slow: 5, fast: 10, lunge: 1.4, twist: [0.1, -0.3], dir: [1, 0, 0.08], sound: 'punch' }),
-  cross: move({ name: 'cross', cock: 'cock', hit: 'cross', time: [0.13, 0.11, 0.25], limb: RIGHT_HAND, mass: 3.5, slow: 6, fast: 12, lunge: 1.6, twist: [-0.3, 0.5], dir: [1, 0, 0.08], sound: 'punch', heavy: true }),
-  hook: move({ name: 'hook', cock: 'hookCock', hit: 'hook', time: [0.15, 0.12, 0.28], limb: LEFT_HAND, mass: 3.8, slow: 7, fast: 13, lunge: 1, twist: [0.35, -0.65], dir: [0.55, -0.8, 0.05], sound: 'punch', heavy: true }),
-  uppercut: move({ name: 'uppercut', cock: 'upperCock', hit: 'uppercut', time: [0.17, 0.12, 0.32], limb: RIGHT_HAND, mass: 3.8, slow: 7, fast: 13, lunge: 1.2, twist: [-0.2, 0.4], dir: [0.45, 0, 0.9], sound: 'punch', heavy: true }),
+  jab: move({ name: 'jab', cock: 'guard', hit: 'jab', time: [0.06, 0.09, 0.16], limb: LEFT_HAND, mass: 2.5, slow: 5, fast: 10, lunge: 1.6, twist: [0.12, -0.4], dir: [1, 0, 0.08], sound: 'punch' }),
+  cross: move({ name: 'cross', cock: 'cock', hit: 'cross', time: [0.12, 0.1, 0.24], limb: RIGHT_HAND, mass: 3.5, slow: 6, fast: 12, lunge: 1.8, twist: [-0.4, 0.8], dir: [1, 0, 0.08], sound: 'punch', heavy: true }),
+  hook: move({ name: 'hook', cock: 'hookCock', hit: 'hook', time: [0.14, 0.11, 0.28], limb: LEFT_HAND, mass: 3.8, slow: 7, fast: 13, lunge: 1, twist: [0.45, -0.95], dir: [0.55, -0.8, 0.05], sound: 'punch', heavy: true }),
+  uppercut: move({ name: 'uppercut', cock: 'upperCock', hit: 'uppercut', time: [0.16, 0.11, 0.32], limb: RIGHT_HAND, mass: 3.8, slow: 7, fast: 13, lunge: 1.2, twist: [-0.3, 0.55], dir: [0.45, 0, 0.9], sound: 'punch', heavy: true }),
+  elbow: move({ name: 'elbow', cock: 'elbowCock', hit: 'elbow', time: [0.12, 0.1, 0.3], limb: RIGHT_ELBOW, mass: 4.5, slow: 6, fast: 11, radius: 0.15, lunge: 1.4, twist: [-0.45, 0.9], dir: [0.6, 0.75, 0.05], sound: 'punch', heavy: true }),
+  knee: move({ name: 'knee', cock: 'kneeCock', hit: 'knee', time: [0.14, 0.12, 0.3], limb: RIGHT_KNEE, full: true, mass: 7, slow: 5, fast: 9, radius: 0.18, lunge: 1.2, twist: [0, 0], dir: [0.7, 0, 0.6], sound: 'kick', heavy: true }),
   kick: move({ name: 'kick', cock: 'kickCock', hit: 'kick', time: [0.18, 0.14, 0.34], limb: RIGHT_FOOT, full: true, mass: 7, slow: 6, fast: 11, radius: 0.16, lunge: 0.6, twist: [0, 0], dir: [1, 0, 0.1], sound: 'kick', heavy: true }),
   roundhouse: move({ name: 'roundhouse', cock: 'roundCock', hit: 'roundhouse', time: [0.2, 0.15, 0.4], limb: RIGHT_FOOT, full: true, mass: 7.5, slow: 8, fast: 14, radius: 0.17, lunge: 0.4, twist: [-0.3, 0.8], dir: [0.5, 0.85, 0.1], sound: 'kick', heavy: true }),
   stomp: move({ name: 'stomp', cock: 'kickCock', hit: 'stomp', time: [0.2, 0.12, 0.35], limb: RIGHT_FOOT, full: true, mass: 8, slow: 4, fast: 9, radius: 0.2, lunge: 0.5, twist: [0, 0], dir: [0.2, 0, -1], sound: 'kick', heavy: true }),
-  swing: move({ name: 'swing', cock: 'stickCock', hit: 'stickSwing', time: [0.36, 0.16, 0.42], limb: -1, mass: 2.5, slow: 10, fast: 22, radius: 0.16, lunge: 0.8, twist: [-0.5, 0.6], dir: [1, 0, 0], stick: [STICK_AIM.cock, STICK_AIM.swing], sound: 'stick', heavy: true }),
+  swing: move({ name: 'swing', cock: 'stickCock', hit: 'stickSwing', time: [0.32, 0.14, 0.5], limb: -1, mass: 2.5, slow: 10, fast: 22, radius: 0.16, lunge: 0.9, twist: [-0.85, 0.95], dir: [1, 0, 0], stick: [STICK_AIM.cock, STICK_AIM.swing], sound: 'stick', heavy: true }),
   chop: move({ name: 'chop', cock: 'stickHigh', hit: 'stickChop', time: [0.4, 0.14, 0.45], limb: -1, mass: 2.8, slow: 10, fast: 20, radius: 0.16, lunge: 0.6, twist: [0, 0], dir: [0.5, 0, -0.8], stick: [STICK_AIM.high, STICK_AIM.chop], sound: 'stick', heavy: true }),
 };
-const PUNCHES: MoveName[] = ['jab', 'cross', 'hook', 'uppercut'];
+const PUNCHES: MoveName[] = ['jab', 'cross', 'hook', 'uppercut', 'elbow'];
 const SWINGS: MoveName[] = ['swing', 'chop'];
 /** seconds after one blow in which the next is the following one of the combination */
 const CHAIN = 0.6;
@@ -146,8 +151,12 @@ export class Fighter {
   yaw = 0;
   /** holding the hockey stick */
   armed = false;
+  /** holding a rifle: shouldered, and no blows thrown */
+  gun = false;
   /** someone lies at their feet, in front of them: a kick is a stamp */
   stompable = false;
+  /** someone standing right up against them: a kick is a knee */
+  close = false;
   /** how high their voice is */
   voice = 1;
   /** the blow being thrown, if any */
@@ -162,6 +171,8 @@ export class Fighter {
   calm = 99;
   /** seconds since they were last hurt */
   unhurt = 99;
+  /** seconds since they last made a sound at being hit */
+  unhurtVoice = 99;
   /** m/s of the blow from a car or anything else that knocked them flying in the last physics step, for whoever wants to know */
   struck = 0;
   /** who last hit them */
@@ -207,7 +218,7 @@ export class Fighter {
     this.t = this.balance = this.daze = this.queuedFor = this.struck = this.stance = this.still = this.twist = this.freeze = 0;
     this.health = 100;
     this.calm = this.unhurt = this.since = 99;
-    this.armed = this.pooled = this.stompable = false;
+    this.armed = this.pooled = this.stompable = this.close = this.gun = false;
     this.move = this.queued = this.last = null;
     this.hitBy = null;
     this.yaw = yaw;
@@ -231,6 +242,14 @@ export class Fighter {
     this.doll.deactivate();
     this.reset(figure, x, y, z, yaw);
     this.body.place(x, y, z);
+  }
+
+  /** Just out of a car seat: rising out of a crouch to their feet, which takes a moment. */
+  stepOut() {
+    const figure = this.figure!;
+    figure.snap(figure.source.poses.crouch);
+    figure.drop = CROUCH_DROP * 0.7;
+    [this.state, this.t] = ['getup', CROUCHED + 0.15];
   }
 
   /** Already off their feet, thrown at `vel`: someone a car has just hit. */
@@ -275,6 +294,7 @@ export class Fighter {
    * then a roundhouse, or a stamp on someone down). With the stick in hand a punch is a swing of it.
    */
   attack(kind: MoveName | 'punch' | 'kick' = 'punch') {
+    if (this.gun) return;
     this.queued = kind;
     this.queuedFor = 0.3;
   }
@@ -294,7 +314,7 @@ export class Fighter {
 
   private pick(kind: MoveName | 'punch' | 'kick'): MoveName {
     const chained = this.since < CHAIN;
-    if (kind === 'kick') return this.stompable ? 'stomp' : chained && this.last === 'kick' ? 'roundhouse' : 'kick';
+    if (kind === 'kick') return this.stompable ? 'stomp' : this.close ? 'knee' : chained && this.last === 'kick' ? 'roundhouse' : 'kick';
     if (this.armed && kind !== 'stomp' && kind !== 'roundhouse') {
       return chained && this.last && SWINGS.includes(this.last) ? SWINGS[(SWINGS.indexOf(this.last) + 1) % SWINGS.length] : 'swing';
     }
@@ -433,6 +453,7 @@ export class Fighter {
     this.t += dt;
     this.calm += dt;
     this.unhurt += dt;
+    this.unhurtVoice += dt;
     this.since += dt;
     this.queuedFor -= dt;
     this.balance = Math.max(0, this.balance - 25 * dt);
@@ -488,18 +509,24 @@ export class Fighter {
     mix(_a, figure.source.walk[frame], figure.source.walk[next], part);
     if (run > 0) mix(_a, _a, mix(_b, figure.source.run[frame], figure.source.run[next], part), run);
     mix(this.target, poses.stand, _a, clamp(speed / 0.5, 0, 1));
+    // squared up and not going anywhere: on the balls of bent legs, the left foot forward (a blow's own legs come over this)
+    const squared = this.gun ? 0 : this.stance * clamp(1 - speed / 1.2, 0, 1) * (this.armed ? 0.6 : 1);
+    if (squared > 0.01) mix(this.target, this.target, poses.fightStance, squared);
 
     // arms and back, or the whole body: whatever the fight asks of them
     this.stance += ((this.calm < 5 ? 1 : 0) - this.stance) * damp(4, dt);
     let upper: Baked | null = null, weight = 1, rate = 12, whole = false, drop = 0;
     const s = this.state;
     if (s === 'move') {
-      if (this.intent.block) upper = poses.block;
+      if (this.gun) [upper, rate] = [poses.rifle, 16];
+      else if (this.intent.block) upper = poses.block;
       else if (this.armed) upper = poses.stickCarry;
       else if (this.stance > 0.01) [upper, weight] = [poses.guard, this.stance];
     } else if (m && s === 'cock') [upper, rate, whole] = [poses[m.cock], m.full ? 16 : 20, m.full];
-    else if (m && s === 'strike') [upper, rate, whole] = [poses[m.hit], m.full ? 28 : 45, m.full];
-    else if (m && s === 'recover') [upper, rate] = [this.armed ? poses.stickCarry : poses.guard, 10];
+    // the blow's legs come with it (the back heel driving), so it is mixed whole whenever it has legs of its own
+    else if (m && s === 'strike') [upper, rate, whole] = [poses[m.hit], m.full ? 28 : 45, m.full || this.stance > 0.5];
+    // a swing carries on through before the stick comes back round; a punch snaps back to the guard
+    else if (m && s === 'recover') [upper, rate] = [m.stick && this.t < m.time[2] * 0.45 ? poses.stickFollow : this.armed ? poses.stickCarry : poses.guard, m.stick ? 8 : 14];
     else if (s === 'dodge') [upper, rate, whole, drop] = [poses.duck, 22, true, 0.16];
     else [upper, rate] = [poses[this.reaction], 22];
     if (upper) mix(this.target, this.target, upper, weight, whole ? undefined : UPPER);
@@ -534,7 +561,7 @@ export class Fighter {
     figure.refresh();
 
     // the fist, the foot, or the far end of the stick: where it is, and how fast it is really going
-    const aim = m?.stick ? (s === 'cock' ? m.stick[0] : s === 'strike' ? m.stick[1] : STICK_AIM.carry) : STICK_AIM.carry;
+    const aim = m?.stick ? (s === 'cock' ? m.stick[0] : s === 'strike' ? m.stick[1] : s === 'recover' && this.t < m.time[2] * 0.45 ? STICK_AIM.follow : STICK_AIM.carry) : STICK_AIM.carry;
     _v.set(aim[0], aim[1], aim[2]).normalize().applyAxisAngle(UP, this.yaw);
     this.stickDir.lerp(_v, damp(s === 'strike' ? 35 : s === 'cock' ? 16 : 10, dt)).normalize();
     figure.at(RIGHT_HAND, this.hand);

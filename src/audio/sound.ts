@@ -112,6 +112,10 @@ export class Sound {
     this.rumble.filter.frequency.value = 220;
     this.noise = noise;
     this.startEngine();
+    // the traffic's engines (an auto's single, a car's four, a bus's diesel), made one at a time in spare moments
+    // now rather than in the middle of a frame the first time one drives up
+    const later = (fn: () => void) => ('requestIdleCallback' in window ? requestIdleCallback(fn) : setTimeout(fn, 50));
+    for (const [cyl, diesel] of [[1, false], [4, false], [6, true]] as const) later(() => bank(ctx, cyl, diesel));
 
     for (const name of FILES) {
       fetch(`${import.meta.env.BASE_URL}sounds/${name}`)
@@ -401,9 +405,11 @@ export class Sound {
         burst('bandpass', 420 / Math.max(0.5, strength), 1.4, 0.35 * strength, 0.18, 1600);
         break;
       case 'punch':
+        // the weight of it, the slap of knuckle on skin, and the crack of bone under it on a hard one
         tone(130, 48, 1.3 * k, 0.13);
         burst('lowpass', 900, 0.8, 1.4 * k, 0.07);
-        burst('highpass', 2600, 0.7, 0.55 * k, 0.03);
+        burst('bandpass', 1400, 1.2, 1.1 * k, 0.035);
+        burst('highpass', 2600, 0.7, 0.55 * k, 0.02);
         if (strength > 30) burst('bandpass', 3800, 3, 0.6 * k, 0.025, undefined, 0.004);
         break;
       case 'kick':
@@ -431,38 +437,113 @@ export class Sound {
         burst('lowpass', 700, 0.8, 0.5 * b, 0.12, undefined, 0.06);
         break;
       }
-      default: {
-        // a voice: an exertion ("hah") or a cry of pain ("agh"), falling in pitch as the breath goes out
-        const pain = kind === 'pain', seconds = (pain ? 0.26 : 0.15) + Math.random() * 0.1 + (pain ? strength * 0.1 : 0);
-        const f0 = 112 * voice * (pain ? 1.25 + strength * 0.15 : 1), level = (pain ? 0.5 : 0.35) * clamp(strength, 0.4, 1.4);
-        const osc = ctx.createOscillator();
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(f0 * vary(), t);
-        osc.frequency.linearRampToValueAtTime(f0 * (pain ? 1.12 : 1.02), t + seconds * 0.3);
-        osc.frequency.exponentialRampToValueAtTime(f0 * 0.72, t + seconds);
-        const throat = ctx.createGain();
-        throat.gain.setValueAtTime(0.0001, t);
-        throat.gain.exponentialRampToValueAtTime(level, t + 0.02);
-        throat.gain.setValueAtTime(level, t + seconds * 0.45);
-        throat.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
-        osc.connect(throat);
-        // the vowel: "uh" for a grunt, "a" for a cry, a little higher in a higher voice
-        const lift = Math.sqrt(voice);
-        for (const [hz, q, share] of pain ? [[800, 6, 1], [1250, 8, 0.7], [2600, 10, 0.25]] : [[600, 5, 1], [1050, 7, 0.6], [2400, 10, 0.2]]) {
-          const f = ctx.createBiquadFilter();
-          f.type = 'bandpass';
-          f.frequency.value = hz * lift;
-          f.Q.value = q;
-          const g = ctx.createGain();
-          g.gain.value = share * 2.2;
-          throat.connect(f).connect(g).connect(out);
-        }
-        osc.start(t);
-        osc.stop(t + seconds + 0.05);
-        // and the breath through it
-        burst('bandpass', 1500 * lift, 1.5, level * 0.35, seconds * 0.8);
+      case 'm416':
+      case 'akm': {
+        // the supersonic crack, the boom of the charge, the bolt, and the street throwing it back a beat later
+        const ak = kind === 'akm';
+        out.gain.value = 1;
+        burst('highpass', ak ? 1400 : 1900, 0.7, 1.6, 0.045);
+        burst('bandpass', ak ? 900 : 1300, 0.9, 1.3, 0.08);
+        tone(ak ? 85 : 110, 35, ak ? 2 : 1.6, ak ? 0.22 : 0.17);
+        burst('lowpass', ak ? 380 : 520, 0.8, ak ? 1.9 : 1.5, ak ? 0.2 : 0.15);
+        burst('bandpass', 3200, 4, 0.25, 0.02, undefined, 0.035);
+        for (const [at, level] of [[0.09, 0.32], [0.21, 0.18], [0.38, 0.1]]) burst('bandpass', 700 + Math.random() * 400, 0.8, level * (ak ? 1.2 : 1), 0.28, 300, at);
+        break;
       }
+      case 'hit':
+        // a round going into someone
+        tone(160, 60, 0.9 * strength, 0.07);
+        burst('bandpass', 1100, 1.5, 1.1 * strength, 0.05);
+        burst('lowpass', 500, 1, 0.8 * strength, 0.09);
+        break;
+      case 'ricochet':
+        burst('highpass', 2500, 0.8, 0.5, 0.03);
+        tone(2600 + Math.random() * 1800, 1200, 0.08, 0.22, 'sine');
+        burst('lowpass', 700, 1, 0.4, 0.05);
+        break;
+      case 'click':
+        burst('bandpass', 3500, 6, 0.5, 0.015);
+        break;
+      case 'reload':
+        // the magazine out, in, and the charging handle
+        burst('bandpass', 1800, 4, 0.5 * strength, 0.04);
+        burst('bandpass', 1200, 5, 0.6 * strength, 0.05, undefined, 0.45 * strength);
+        burst('bandpass', 2400, 6, 0.7 * strength, 0.04, undefined, 0.9 * strength);
+        tone(180, 120, 0.2 * strength, 0.06);
+        break;
+      default:
+        this.voice(kind === 'pain', strength, voice, out, burst);
     }
+  }
+
+  /**
+   * A voice: the effort of a blow thrown ("hff", "hup") or the noise of one taken ("oof", "ugh", and on a bad one
+   * a strangled "argh"). Mostly breath: a short burst of air through the mouth's shape, with the voice coming in
+   * under it only briefly, unsteady and creaking as a real throat does when it is hit. Never quite the same twice.
+   */
+  private voice(pain: boolean, strength: number, pitch: number, out: AudioNode, burst: (type: BiquadFilterType, hz: number, q: number, level: number, seconds: number, to?: number, at?: number) => void) {
+    const ctx = this.ctx!, t = ctx.currentTime, r = Math.random;
+    const hard = pain && strength > 0.9;
+    const seconds = pain ? (hard ? 0.32 : 0.16) + r() * 0.12 : 0.09 + r() * 0.07;
+    const level = (pain ? 0.42 : 0.26) * clamp(strength, 0.4, 1.3);
+    // vowels as the mouth makes them, formant pairs in Hz: "uh", "oh", "ah", "eh", "oo"
+    const vowels: [number, number][] = pain ? (hard ? [[750, 1200], [680, 1100], [600, 1050]] : [[520, 950], [450, 850], [380, 800], [640, 1150]]) : [[500, 1000], [420, 900], [550, 1400]];
+    const [f1, f2] = vowels[Math.floor(r() * vowels.length)];
+    const lift = Math.sqrt(pitch);
+    const f0 = (pain ? 125 + strength * 30 : 105) * pitch * (0.92 + r() * 0.16);
+
+    // the throat: a buzz whose pitch wavers and drops as the air runs out, gated short
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(f0 * (pain ? 1.15 : 1), t);
+    osc.frequency.exponentialRampToValueAtTime(f0 * 0.7, t + seconds);
+    const wobble = ctx.createOscillator(), wobbleDepth = ctx.createGain();
+    wobble.frequency.value = 5 + r() * 9;
+    wobbleDepth.gain.value = f0 * (hard ? 0.09 : 0.04);
+    wobble.connect(wobbleDepth).connect(osc.frequency);
+    const soft = ctx.createBiquadFilter();
+    soft.type = 'lowpass';
+    soft.frequency.value = 1800 * lift;
+    const throat = ctx.createGain();
+    // the voice comes in a beat after the air and is gone before it
+    throat.gain.setValueAtTime(0.0001, t);
+    throat.gain.exponentialRampToValueAtTime(level * (pain ? 0.8 : 0.45), t + 0.015 + r() * 0.02);
+    throat.gain.exponentialRampToValueAtTime(0.0001, t + seconds * (pain ? 0.85 : 0.6));
+    osc.connect(soft).connect(throat);
+    let src: AudioNode = throat;
+    if (hard) {
+      // a creak: the voice breaking up as it is forced out
+      const creak = ctx.createGain(), rattle = ctx.createOscillator(), depth = ctx.createGain();
+      rattle.type = 'square';
+      rattle.frequency.value = 28 + r() * 25;
+      depth.gain.value = 0.5;
+      creak.gain.value = 0.5;
+      rattle.connect(depth).connect(creak.gain);
+      throat.connect(creak);
+      src = creak;
+      rattle.start(t);
+      rattle.stop(t + seconds + 0.05);
+    }
+    // the mouth: two resonances, the second sliding as the jaw closes
+    for (const [hz, q, share, slide] of [[f1, 4, 1, 0.85], [f2, 6, 0.55, 0.8], [2600, 8, 0.15, 1]] as const) {
+      const f = ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.setValueAtTime(hz * lift, t);
+      f.frequency.linearRampToValueAtTime(hz * lift * slide, t + seconds);
+      f.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.value = share * 2.4;
+      src.connect(f).connect(g).connect(out);
+    }
+    for (const o of [osc, wobble]) {
+      o.start(t);
+      o.stop(t + seconds + 0.05);
+    }
+    // the breath: most of what is heard, forced out through the same mouth shape
+    burst('bandpass', f2 * lift, 1.2, level * (pain ? 0.55 : 0.9), seconds, f1 * lift);
+    burst('highpass', 3000, 0.6, level * 0.25, seconds * 0.5);
+    // a gasp in after a bad one
+    if (hard && r() < 0.6) burst('bandpass', 2200 * lift, 2, level * 0.3, 0.2, 1500, seconds + 0.12);
   }
 
   /** A hit: `strength` is the speed lost, m/s. Light knocks clank; hard ones crunch, the hardest break glass. */

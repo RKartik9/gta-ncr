@@ -53,6 +53,12 @@ export class CameraDirector {
   private footBack = 3;
   private shaking = 0;
   private quake = new THREE.Vector3();
+  /** a rifle up and the right button held: in over the shoulder, the lens narrowed */
+  aiming = false;
+  private aimK = 0;
+  /** getting in or out of the car: the camera glides from where it was rather than jumping */
+  private glideFrom = { p: new THREE.Vector3(), q: new THREE.Quaternion(), fov: 60 };
+  private glide = 1;
 
   constructor(dom: HTMLElement) {
     this.camera = new THREE.PerspectiveCamera(this.fov, window.innerWidth / window.innerHeight, 0.15, 6000);
@@ -118,11 +124,35 @@ export class CameraDirector {
 
   /** Out of the car, looking the way `yaw` runs; or back in it, and the mouse is the player's own again. */
   setOnFoot(on: boolean, yaw: number) {
+    this.glideFrom.p.copy(this.camera.position);
+    this.glideFrom.q.copy(this.camera.quaternion);
+    this.glideFrom.fov = this.camera.fov;
+    this.glide = 0;
     this.onFoot = on;
     this.footYaw = yaw;
     this.footPitch = 0.22;
     this.cut();
     if (!on && document.pointerLockElement) document.exitPointerLock();
+  }
+
+  /** A rifle's kick: the aim thrown up `pitch` radians and aside `yaw`. */
+  recoil(pitch: number, yaw: number) {
+    this.footPitch = clamp(this.footPitch - pitch, -0.55, 1.25);
+    this.footYaw += yaw;
+  }
+
+  /** Over the first half second after getting in or out, eased from where the camera was to where it now wants to be. */
+  private glideIn(dt: number) {
+    if (this.glide >= 1) return;
+    this.glide = Math.min(1, this.glide + dt / 0.55);
+    const k = 1 - (1 - this.glide) ** 3, cam = this.camera, from = this.glideFrom;
+    cam.position.lerpVectors(from.p, cam.position, k);
+    cam.quaternion.slerpQuaternions(from.q, cam.quaternion, k);
+    const fov = from.fov + (cam.fov - from.fov) * k;
+    if (Math.abs(fov - cam.fov) > 0.01) {
+      cam.fov = fov;
+      cam.updateProjectionMatrix();
+    }
   }
 
   /** A jolt to the camera of about `amount` metres: a blow landed or taken. */
@@ -141,9 +171,11 @@ export class CameraDirector {
    */
   updateOnFoot(dt: number, feet: THREE.Vector3, tall: number, sight: (from: THREE.Vector3, dir: THREE.Vector3, reach: number) => number | null) {
     const cam = this.camera, yaw = this.footYaw, c = Math.cos(this.footPitch);
-    const pivot = new THREE.Vector3(feet.x - Math.cos(yaw) * 0.42, feet.y + tall * 0.9, feet.z + Math.sin(yaw) * 0.42);
+    this.aimK += ((this.aiming ? 1 : 0) - this.aimK) * damp(10, dt);
+    const shoulder = 0.42 + 0.2 * this.aimK;
+    const pivot = new THREE.Vector3(feet.x - Math.cos(yaw) * shoulder, feet.y + tall * 0.9, feet.z + Math.sin(yaw) * shoulder);
     const back = new THREE.Vector3(-Math.sin(yaw) * c, Math.sin(this.footPitch), -Math.cos(yaw) * c);
-    const most = 3 * this.footZoom, clear = sight(pivot, back, most + 0.4);
+    const most = 3 * this.footZoom * (1 - 0.55 * this.aimK), clear = sight(pivot, back, most + 0.4);
     const room = clear === null ? most : Math.max(0.5, clear - 0.35);
     // in at once when something is in the way, out again gently
     this.footBack = this.snap || room < this.footBack ? room : lerp(this.footBack, room, damp(4, dt));
@@ -159,7 +191,8 @@ export class CameraDirector {
       this.shaking *= Math.exp(-11 * dt);
     }
     this.snap = false;
-    this.lens(60, 0.1);
+    this.lens(60 - 18 * this.aimK, 0.1);
+    this.glideIn(dt);
   }
 
   /** Call when the car is moved or swapped, so the camera jumps instead of flying across the map. */
@@ -280,6 +313,7 @@ export class CameraDirector {
 
     this.snap = false;
     this.lens(fov, near);
+    this.glideIn(dt);
   }
 
   private lens(fov: number, near: number) {

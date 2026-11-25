@@ -163,6 +163,10 @@ export class Traffic {
   private wheels: Instances[] = [];
   private meshOf = new Map<TrafficKind, { shell: Instances; wheels: Instances }>();
   private lamps: { head: THREE.MeshStandardNodeMaterial; tail: THREE.MeshStandardNodeMaterial }[] = [];
+  /** the pool of light thrown on the road ahead of the nearest cars after dark, and the cars it is lent to */
+  private beams: THREE.PointLight[] = [];
+  private beamCars: Car[] = [];
+  private lightsOn = false;
   private near: number;
   private far: number;
   private m = new THREE.Matrix4();
@@ -173,8 +177,17 @@ export class Traffic {
   private one = new THREE.Vector3(1, 1, 1);
   private up = new THREE.Vector3(0, 1, 0);
   private side = new THREE.Vector3(1, 0, 0);
+  private paint = new THREE.Color();
 
-  constructor(scene: THREE.Scene, world: RAPIER.World, count: number, drawDistance: number) {
+  /** `beams`: how many of the nearest cars light the road ahead of them at night (point lights: cheap only with clustered lighting) */
+  constructor(scene: THREE.Scene, world: RAPIER.World, count: number, drawDistance: number, beams = 0) {
+    for (let i = 0; i < beams; i++) {
+      // a point low and a few metres ahead of the nose stands in for two headlamp cones: a pool of light on the road
+      const l = new THREE.PointLight(0xfff1dc, 0, 16, 2);
+      l.position.set(0, -1000, 0);
+      scene.add(l);
+      this.beams.push(l);
+    }
     this.far = Math.min(drawDistance, 320);
     this.near = Math.min(140, this.far * 0.5);
     // the mix of vehicles: which kind each one is, and how many copies of each kind are drawn
@@ -348,6 +361,8 @@ export class Traffic {
     car.react = car.laneTimer = car.honk = car.wait = car.hurry = car.signal = car.honks = 0;
     car.brake = false;
     // a bus or a truck has a deeper horn than a car, an auto a higher one
+    // a new car each time a slot comes back, not the same one round again
+    this.meshOf.get(car.kind)!.shell.setColorAt(car.slot, this.paint.setHex(car.kind.colours[Math.floor(Math.random() * car.kind.colours.length)]));
     car.hornPitch = (car.kind.majorOnly ? 0.85 : car.kind.topSpeed < 12 ? 1.12 : 1) * (0.96 + Math.random() * 0.08);
     car.speed = e.speed * car.cruise * 0.6;
     car.ox = e.fz * e.lanes[car.lane];
@@ -625,7 +640,20 @@ export class Traffic {
     if (this.lampTimer <= 0) {
       this.lampTimer = 0.25;
       this.lightSignals();
+      if (this.lightsOn && this.beams.length) {
+        this.beamCars = this.cars
+          .filter((c) => c.on && !c.wrecked)
+          .sort((a, b) => Math.hypot(a.x - px, a.z - pz) - Math.hypot(b.x - px, b.z - pz))
+          .slice(0, this.beams.length);
+      }
     }
+    this.beams.forEach((l, i) => {
+      const car = this.lightsOn ? this.beamCars[i] : undefined;
+      if (!car?.on || car.wrecked) return void (l.intensity = 0);
+      const ahead = car.kind.length / 2 + 4;
+      l.position.set(car.x + Math.sin(car.yaw) * ahead, 0.9, car.z + Math.cos(car.yaw) * ahead);
+      l.intensity = car.kind.id.startsWith('auto') ? 18 : 35;
+    });
   }
 
   /** Metres to (x, z) if it is in front of the car and in its lane (or the lane `shift` metres to its left), else Infinity. */
@@ -750,6 +778,7 @@ export class Traffic {
 
   /** Head and tail lamps glow after dark. */
   setLights(on: boolean) {
+    this.lightsOn = on;
     for (const { head, tail } of this.lamps) {
       head.emissiveIntensity = on ? 6 : 0.6;
       tail.emissiveIntensity = on ? 2 : 0.5;

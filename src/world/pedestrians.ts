@@ -2,11 +2,12 @@ import type RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Road } from './tile.ts';
+import { attribute, luminance, materialColor, mix, step } from 'three/tsl';
 import { Instances, instanced } from '../render/instances.ts';
 import { type Pose, type V3, posedFigures } from '../vehicle/rider.ts';
 
-/** A walk cycle in this many frozen frames; each walker is drawn in whichever frame its stride has reached. */
-const FRAMES = 8;
+/** A walk cycle in this many frozen frames; each walker is drawn in whichever frame its stride has reached. One more, after them, is standing. */
+const FRAMES = 16;
 /** metres walked in one full cycle (two steps) */
 const STRIDE = 1.5;
 /** walkers further than this from the player are not drawn (they are small, and each one is a whole figure) */
@@ -50,6 +51,9 @@ export interface Walker {
   scale: number;
   /** which of the loaded figures this is */
   figure: number;
+  /** what they are wearing */
+  top: THREE.Color;
+  bottom: THREE.Color;
   /**
    * walk: along the pavement. idle: stopped a while (a shop window, a phone). wait: at the kerb for a gap in the
    * traffic. cross: over the road to the pavement opposite. down: knocked down by a car, flat until `timer` runs out.
@@ -82,16 +86,19 @@ const LOOK = 2.5;
 /** what a walker can bump into in the physics world: everything but the ground */
 const QUERY_GROUPS = (0x0020 << 16) | (0xffff & ~0x0002);
 
-/** Walk cycle frame k: legs and arms swinging in opposite pairs, the knee folding as the foot comes through. */
-export function walkPose(k: number): Pose {
+/**
+ * Walk cycle frame k: legs and arms swinging in opposite pairs, the knee folding as the foot comes through.
+ * `stride` 0 is standing still: legs straight, arms hanging.
+ */
+export function walkPose(k: number, stride = 1): Pose {
   const a = (k / FRAMES) * Math.PI * 2;
   const leg = (phase: number): [V3, V3] => {
-    const swing = Math.sin(phase) * 0.42;
-    const bend = Math.max(0, Math.sin(phase + 1.3)) * 0.75 + 0.05;
+    const swing = Math.sin(phase) * 0.42 * stride;
+    const bend = Math.max(0, Math.sin(phase + 1.3)) * 0.75 * stride + 0.05;
     return [[0.04, -Math.cos(swing), Math.sin(swing)], [0, -Math.cos(swing - bend), Math.sin(swing - bend)]];
   };
   const arm = (phase: number): [V3, V3] => {
-    const swing = -Math.sin(phase) * 0.35;
+    const swing = -Math.sin(phase) * 0.35 * stride;
     return [[0.16, -Math.cos(swing), Math.sin(swing)], [0.04, -Math.cos(swing + 0.35), Math.sin(swing + 0.35)]];
   };
   const [lu, ll] = leg(a), [ru, rl] = leg(a + Math.PI), [la, lf] = arm(a), [ra, rf] = arm(a + Math.PI);
@@ -103,18 +110,35 @@ export function walkPose(k: number): Pose {
   };
 }
 
-/** A figure's material, remade as a node material that draws `Instances`. */
+/**
+ * A figure's material, remade as a node material that draws `Instances`. The clothes are dyed per person: the
+ * texture's light and shade kept, its colour swapped for the copy's own (top: its colour, bottom: its spare numbers),
+ * so six figures make a street of different people.
+ */
 function nodeMaterial(m: THREE.Material) {
   const src = m as THREE.MeshStandardMaterial;
-  return instanced(new THREE.MeshStandardNodeMaterial({
+  const node = new THREE.MeshStandardNodeMaterial({
     color: src.color, map: src.map, normalMap: src.normalMap, roughness: src.roughness, metalness: src.metalness,
     roughnessMap: src.roughnessMap, metalnessMap: src.metalnessMap, side: src.side, alphaTest: src.transparent || src.alphaTest ? 0.5 : 0,
-  }));
+  });
+  const dye = src.name.includes('Outfit_Top') ? 'icol' : src.name.includes('Outfit_Bottom') ? 'iext' : null;
+  if (dye) {
+    // black means keep the clothes as made: a fighter handed back to the pavement looks as they did in the fight
+    const tint = attribute(dye, 'vec3');
+    node.colorNode = mix(materialColor, luminance(materialColor).mul(1.7).mul(tint).min(1), step(0.001, tint.x.add(tint.y).add(tint.z)).mul(0.85));
+  }
+  return instanced(node);
 }
+
+// What Delhi wears: white and pastel kurtas and shirts, saffron, maroon, mustard, a pink or green saree, black and navy;
+// below, jeans, black and khaki trousers, white pyjama, a brown salwar.
+const TOPS = [0xf2efe6, 0xf2efe6, 0x9cc3e0, 0x7a1f2b, 0xe8892b, 0xd9a521, 0xd6578a, 0x2f7a4a, 0x1d1f22, 0x24345e, 0x8a8f96, 0xc9c0e8, 0xb34428];
+const BOTTOMS = [0x2a3a5a, 0x2a3a5a, 0x1c1c1e, 0x8a7a5a, 0x5a5e66, 0xeeeae0, 0x6a4a32, 0x3d4a2e];
+const pick = (list: number[]) => new THREE.Color(list[Math.floor(Math.random() * list.length)]);
 
 /** One figure's walk cycle, frozen frame by frame: an `Instances` per frame, standing on the ground at `height` metres tall. */
 async function walkCycle(file: string, height: number, count: number, scene: THREE.Scene) {
-  const figures = await posedFigures(Array.from({ length: FRAMES }, (_, k) => walkPose(k)), file);
+  const figures = await posedFigures([...Array.from({ length: FRAMES }, (_, k) => walkPose(k)), walkPose(0, 0)], file);
   // feet on the ground (the lowest point of any frame) and brought to the height asked for
   const box = new THREE.Box3();
   for (const f of figures) box.expandByObject(f);
@@ -181,7 +205,7 @@ export class Pedestrians {
     this.world = world;
     for (let i = 0; i < count; i++) {
       this.walkers.push({
-        on: false, side: { pts: [], width: 0 }, seg: 0, decide: 0, tx: 0, tz: 0, hurry: 0, t: 0, dir: 1, speed: 1.3, lane: 0, x: 0, z: 0, vx: 0, vz: 0, yaw: 0, phase: 0, scale: 1, figure: 0,
+        on: false, side: { pts: [], width: 0 }, seg: 0, decide: 0, tx: 0, tz: 0, hurry: 0, t: 0, dir: 1, speed: 1.3, lane: 0, x: 0, z: 0, vx: 0, vz: 0, yaw: 0, phase: 0, scale: 1, figure: 0, top: new THREE.Color(1, 1, 1), bottom: new THREE.Color(1, 1, 1),
         state: 'walk', timer: 0, vy: 0, y: 0, nerve: 0.5,
       });
     }
@@ -280,7 +304,7 @@ export class Pedestrians {
     const speed = 1.05 + Math.random() * 0.5;
     Object.assign(w, {
       on: true, side, seg: at.seg, t: at.t, dir, speed, lane, x, z, vx: at.fx * speed, vz: at.fz * speed, yaw: Math.atan2(at.fx, at.fz),
-      phase: Math.random(), scale: 0.95 + Math.random() * 0.1, figure: Math.floor(Math.random() * this.frames.length), state: 'walk', timer: 0, y: 0, vy: 0,
+      phase: Math.random(), scale: 0.95 + Math.random() * 0.1, figure: Math.floor(Math.random() * this.frames.length), top: pick(TOPS), bottom: pick(BOTTOMS), state: 'walk', timer: 0, y: 0, vy: 0,
       decide: 3 + Math.random() * 15, hurry: 0, nerve: Math.random(),
     });
   }
@@ -339,8 +363,15 @@ export class Pedestrians {
     const w = this.walkers.find((o) => !o.on), figure = this.kinds.findIndex(([f]) => f === file);
     if (!w || figure < 0) return false;
     Object.assign(w, { on: true, figure, scale: 1, speed: 1.3, lane: 0.3, phase: 0, nerve: 0.9 });
+    w.top.setRGB(0, 0, 0);
+    w.bottom.setRGB(0, 0, 0);
     this.give(w, x, z, yaw, from);
     return true;
+  }
+
+  /** `w` is dead: gone from the street for good, and the slot free for someone new somewhere else. */
+  forget(w: Walker) {
+    Object.assign(w, { on: false, state: 'walk' });
   }
 
   /** Knocked flat by a blow, the old way: for when there is no body free to fall for real. */
@@ -637,12 +668,14 @@ export class Pedestrians {
     const counts = this.frames.map((frames) => frames.map(() => 0));
     for (const w of this.walkers) {
       if (!w.on || w.state === 'taken' || Math.hypot(w.x - px, w.z - pz) > DRAWN) continue;
-      const f = w.state === 'down' ? 0 : Math.floor(w.phase * FRAMES) % FRAMES;
+      const f = w.state === 'down' ? 0 : w.state === 'idle' || w.state === 'wait' ? FRAMES : Math.floor(w.phase * FRAMES) % FRAMES;
       const mesh = this.frames[w.figure][f], i = counts[w.figure][f]++;
       this.q.setFromAxisAngle(this.up, w.yaw);
       // knocked down: laid on their back along the way they were thrown
       if (w.state === 'down') this.q.multiply(new THREE.Quaternion().setFromAxisAngle(this.xAxis, -Math.PI / 2 * Math.min(1, (3.5 - w.timer) * 3)));
       mesh.setMatrixAt(i, this.m.compose(this.p.set(w.x, 0.035 + w.y + (w.state === 'down' ? 0.15 : 0), w.z), this.q, this.s.setScalar(w.scale)));
+      mesh.setColorAt(i, w.top);
+      mesh.setExtraAt(i, w.bottom.r, w.bottom.g, w.bottom.b);
     }
     // only the walkers in each frame are drawn, and a frame nobody is in is not drawn at all
     this.frames.forEach((frames, k) => frames.forEach((mesh, f) => {
