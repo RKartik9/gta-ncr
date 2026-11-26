@@ -18,11 +18,37 @@ const HORN_LOOP = 0.4;
 const VOLUME_KEY = 'delhi-drive:sfx-volume';
 const FILES = ['skid.wav', 'horn.wav', 'crash-1.mp3', 'crash-2.mp3', 'crash-3.mp3'] as const;
 type Clip = (typeof FILES)[number];
+const numbered = (name: string, n: number) => Array.from({ length: n }, (_, i) => `${name}-${i + 1}`);
+/**
+ * The recordings of the rifles and of people's voices (public/sounds/guns and voices, credits in CREDITS.txt):
+ * for each sound, the takes of it there are, one picked each time so that no two in a row are the same.
+ */
+const TAKES: Record<string, string[]> = {
+  m416: ['guns/m416-shot'],
+  akm: ['guns/akm-shot'],
+  'reload-m416': ['guns/m416-reload'],
+  'reload-akm': ['guns/akm-reload'],
+  click: ['guns/dry'],
+  draw: ['guns/draw'],
+  hit: numbered('guns/flesh', 5),
+  headshot: ['guns/headshot'],
+  ricochet: numbered('guns/ricochet', 6),
+  'man-grunt': numbered('voices/man-grunt', 2),
+  'man-pain': numbered('voices/man-hurt', 5),
+  'man-death': numbered('voices/man-death', 3),
+  'man-scream': ['voices/man-scream-1', 'voices/man-death-1'],
+  'woman-grunt': ['voices/woman-grunt-1'],
+  'woman-pain': ['voices/woman-hurt-1', 'voices/woman-grunt-1'],
+  'woman-death': ['voices/woman-scream-3', 'voices/woman-hurt-1'],
+  'woman-scream': numbered('voices/woman-scream', 3),
+};
+/** how high a voice (combat.ts's `voiceOf`) has to be to be a woman's, and how high hers are on average */
+const WOMAN = 1.4, WOMAN_PITCH = 1.75;
 
 /**
  * Game sounds. Engines, the player's and the nearest traffic's, are synthesised (engine.ts); the rest are real
- * recordings (public/sounds, credits in CREDITS.txt): a tyre squeal, a held horn and three crashes picked by how
- * hard the hit was. Wind and the city's distant rumble are filtered noise. Other cars and horns are placed
+ * recordings (public/sounds, credits in CREDITS.txt): a tyre squeal, a held horn, three crashes picked by how
+ * hard the hit was, the rifles, and the voices of people hurt and frightened. Wind and the city's distant rumble are filtered noise. Other cars and horns are placed
  * around the listener (the camera), with Doppler as they pass.
  * The browser only allows sound after a click or key press, so nothing starts until the first one.
  */
@@ -30,6 +56,11 @@ export class Sound {
   private ctx: AudioContext | null = null;
   private bus!: GainNode;
   private clips = new Map<Clip, AudioBuffer>();
+  /** the takes of each recorded sound that have loaded, and which was played last */
+  private takes = new Map<string, AudioBuffer[]>();
+  private lastTake = new Map<string, AudioBuffer>();
+  /** when the last scream started: a street running from gunfire is a few voices, not a choir */
+  private screamed = -9;
   private engine: EngineVoice | null = null;
   private cylinders = 4;
   private diesel = false;
@@ -127,6 +158,64 @@ export class Sound {
         })
         .catch((err) => console.warn(`sound ${name} failed to load`, err));
     }
+    const files = new Map<string, Promise<AudioBuffer | null>>();
+    for (const [sound, names] of Object.entries(TAKES)) {
+      for (const name of names) {
+        let file = files.get(name);
+        if (!file) files.set(name, (file = fetch(`${import.meta.env.BASE_URL}sounds/${name}.mp3`)
+          .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then((b) => ctx.decodeAudioData(b))
+          .catch((err) => (console.warn(`sound ${name} failed to load`, err), null))));
+        void file.then((buf) => buf && this.takes.set(sound, [...(this.takes.get(sound) ?? []), buf]));
+      }
+    }
+  }
+
+  /**
+   * One of the recordings of `kind`, into `out`: false if there is none (not loaded yet, or never recorded), and
+   * the sound is then made up instead. Voices are a man's or a woman's by how high `voice` is, and each person's
+   * is played a little faster or slower than the next's.
+   */
+  private take(kind: Thump, strength: number, voice: number, out: GainNode) {
+    const ctx = this.ctx!, t = ctx.currentTime;
+    let name: string = kind, level = 1, rate = 0.96 + Math.random() * 0.08, wait = 0;
+    switch (kind) {
+      case 'grunt': case 'pain': case 'death': case 'scream': {
+        const woman = voice > WOMAN;
+        name = `${woman ? 'woman' : 'man'}-${kind}`;
+        rate = clamp(woman ? voice / WOMAN_PITCH : voice, 0.85, 1.2);
+        level = kind === 'grunt' ? 0.4 * clamp(strength, 0.5, 1.3) : kind === 'pain' ? 0.75 * clamp(strength, 0.7, 1.2) : 0.9;
+        if (kind === 'scream') {
+          if (t - this.screamed < 0.35) return true;
+          this.screamed = t;
+        }
+        break;
+      }
+      case 'hit':
+        if (strength > 1.2) name = 'headshot';
+        level = 0.85;
+        break;
+      case 'ricochet': level = 0.5; rate = 0.85 + Math.random() * 0.3; break;
+      case 'click': level = 0.7; break;
+      case 'draw': level = 0.6; break;
+      // the recordings are not the length the reloads are: each is played at the speed that fits
+      case 'reload-m416': level = 0.8; rate = 1.15; break;
+      case 'reload-akm': level = 0.8; rate = 0.9; wait = 0.25; break;
+      case 'm416': case 'akm': rate = 0.97 + Math.random() * 0.06; break;
+      default: return false;
+    }
+    const takes = this.takes.get(name);
+    if (!takes?.length) return false;
+    let buf = takes[Math.floor(Math.random() * takes.length)];
+    if (takes.length > 1 && buf === this.lastTake.get(name)) buf = takes[(takes.indexOf(buf) + 1) % takes.length];
+    this.lastTake.set(name, buf);
+    const src = ctx.createBufferSource(), gain = ctx.createGain();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+    gain.gain.value = level;
+    src.connect(gain).connect(out);
+    src.start(t + wait);
+    return true;
   }
 
   private noiseLoop(buffer: AudioBuffer) {
@@ -354,9 +443,10 @@ export class Sound {
 
   /**
    * The sounds of a fight, `distance` metres off: a blow thrown, a fist, a boot or a stick landing, one taken on
-   * a guard, a body hitting the ground, and the voices: the grunt of a heavy blow thrown and the cry of one taken.
-   * None of them is a recording. Blows are a falling low tone for the weight, a burst of noise for the smack of
-   * it and, on a hard one, a crack on top; voices are a buzzing tone shaped by two vowel resonances, as a throat is.
+   * a guard, a body hitting the ground; the rifles, their rounds landing and their magazines changed; and the
+   * voices: the grunt of a heavy blow thrown, the cry of one taken, a scream, a death. The rifles and the voices
+   * are recordings (`take`); the blows are made up, a falling low tone for the weight, a burst of noise for the
+   * smack of it and, on a hard one, a crack on top. Until the recordings have loaded the rest is made up too.
    * `voice` is how high the voice is (a man's is 1).
    */
   thump(kind: Thump, strength: number, distance: number, voice = 1) {
@@ -400,6 +490,14 @@ export class Sound {
       osc.stop(t + seconds + 0.05);
     };
     const k = clamp(strength / 35, 0.3, 1.5);
+    // a rifle carries: it is heard down the street long after a voice is not
+    const loud = kind === 'm416' || kind === 'akm';
+    if (loud) out.gain.value = 1 / (1 + distance / 40);
+    if (this.take(kind, strength, voice, out)) {
+      // under the recording, the thump of it in the chest
+      if (loud) tone(kind === 'akm' ? 80 : 100, 38, 0.5, 0.12);
+      return;
+    }
     switch (kind) {
       case 'swing':
         burst('bandpass', 420 / Math.max(0.5, strength), 1.4, 0.35 * strength, 0.18, 1600);
@@ -441,7 +539,6 @@ export class Sound {
       case 'akm': {
         // the supersonic crack, the boom of the charge, the bolt, and the street throwing it back a beat later
         const ak = kind === 'akm';
-        out.gain.value = 1;
         burst('highpass', ak ? 1400 : 1900, 0.7, 1.6, 0.045);
         burst('bandpass', ak ? 900 : 1300, 0.9, 1.3, 0.08);
         tone(ak ? 85 : 110, 35, ak ? 2 : 1.6, ak ? 0.22 : 0.17);
@@ -464,7 +561,9 @@ export class Sound {
       case 'click':
         burst('bandpass', 3500, 6, 0.5, 0.015);
         break;
-      case 'reload':
+      case 'draw':
+      case 'reload-m416':
+      case 'reload-akm':
         // the magazine out, in, and the charging handle
         burst('bandpass', 1800, 4, 0.5 * strength, 0.04);
         burst('bandpass', 1200, 5, 0.6 * strength, 0.05, undefined, 0.45 * strength);
@@ -472,7 +571,7 @@ export class Sound {
         tone(180, 120, 0.2 * strength, 0.06);
         break;
       default:
-        this.voice(kind === 'pain', strength, voice, out, burst);
+        this.voice(kind !== 'grunt', strength, voice, out, burst);
     }
   }
 

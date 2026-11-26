@@ -381,17 +381,19 @@ export class Pedestrians {
 
   /**
    * A fight has broken out at (x, z). Everyone within `r` metres takes it as they are made: the timid run, most stop
-   * and look, and the boldest are offered to `join` (which says whether it took them).
+   * and look, and the boldest are offered to `join` (which says whether it took them). Returns those who ran.
    */
   scare(x: number, z: number, r: number, join: (w: Walker) => boolean) {
+    const ran: Walker[] = [];
     for (const w of this.walkers) {
       if (!w.on || w.state === 'taken' || w.state === 'down' || w.state === 'flee') continue;
       const d = Math.hypot(w.x - x, w.z - z);
       if (d > r) continue;
       if (w.nerve > 0.85 && join(w)) continue;
-      if (w.nerve < 0.45 || d < 2.5) Object.assign(w, { state: 'flee', tx: x, tz: z, timer: 5 + Math.random() * 5 });
+      if (w.nerve < 0.45 || d < 2.5) ran.push(Object.assign(w, { state: 'flee', tx: x, tz: z, timer: 5 + Math.random() * 5 }));
       else if (w.state === 'walk' || w.state === 'idle') Object.assign(w, { state: 'idle', timer: 4 + Math.random() * 5, vx: 0, vz: 0, yaw: Math.atan2(x - w.x, z - w.z) });
     }
+    return ran;
   }
 
   private segLength(side: Side, seg: number) {

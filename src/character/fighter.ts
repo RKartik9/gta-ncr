@@ -1,7 +1,8 @@
 import * as THREE from 'three/webgpu';
 import type RAPIER from '@dimforge/rapier3d-compat';
 import { BODY_MASS, CHEST, CharacterBody, PELVIS, Ragdoll } from './ragdoll.ts';
-import { type Baked, type Figure, HIPS, LEFT_HAND, NECK, HEAD_BONE, RIGHT_FOOT, RIGHT_HAND, SPINE, SPINE1, SPINE2, UPPER, blank, mix } from './figure.ts';
+import { type Baked, type Figure, HIPS, LEFT_ARM, LEFT_HAND, NECK, HEAD_BONE, RIGHT_ARM, RIGHT_FOOT, RIGHT_HAND, SPINE, SPINE1, SPINE2, UPPER, blank, mix } from './figure.ts';
+import type { Gun } from './guns.ts';
 
 /** the joints an elbow and a knee land with */
 const RIGHT_ELBOW = 12, RIGHT_KNEE = 18;
@@ -17,7 +18,7 @@ import { clamp, damp } from '../util.ts';
 export type State = 'move' | 'cock' | 'strike' | 'recover' | 'stagger' | 'dodge' | 'down' | 'getup';
 
 /** The sounds a fight makes. */
-export type Thump = 'swing' | 'punch' | 'kick' | 'stick' | 'block' | 'thud' | 'body' | 'grunt' | 'pain' | 'm416' | 'akm' | 'hit' | 'ricochet' | 'click' | 'reload';
+export type Thump = 'swing' | 'punch' | 'kick' | 'stick' | 'block' | 'thud' | 'body' | 'grunt' | 'pain' | 'death' | 'scream' | 'm416' | 'akm' | 'hit' | 'ricochet' | 'click' | 'draw' | 'reload-m416' | 'reload-akm';
 
 export type MoveName = 'jab' | 'cross' | 'hook' | 'uppercut' | 'elbow' | 'kick' | 'knee' | 'roundhouse' | 'stomp' | 'swing' | 'chop';
 
@@ -98,6 +99,22 @@ const SPRING = 170, DAMPING = 15;
 export const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 const _a = blank(), _b = blank();
 const _v = new THREE.Vector3(), _mid = new THREE.Vector3(), _axis = new THREE.Vector3();
+const _left = new THREE.Vector3(), _fwd = new THREE.Vector3(), _at = new THREE.Vector3(), _pole = new THREE.Vector3(), _fingers = new THREE.Vector3(), _palm = new THREE.Vector3();
+const _look = new THREE.Matrix4(), _tilt = new THREE.Quaternion(), _euler = new THREE.Euler();
+const ORIGIN = new THREE.Vector3();
+/** 0 to 1, eased at both ends */
+const smooth = (t: number) => { const k = clamp(t, 0, 1); return k * k * (3 - 2 * k); };
+/**
+ * A rifle in the hands, in the rifle's own space (x to the holder's left, y up, z along the barrel). The right hand
+ * round the pistol grip, palm against its right side; the left under the handguard, palm up, fingers across it.
+ * Each is where the middle of the palm goes, the way the fingers run from the wrist, and the way the palm faces.
+ */
+const RIGHT_GRIP = { at: [-0.012, -0.04, -0.02], fingers: [0.1, -0.3, 1], palm: [1, 0, -0.1] } satisfies Record<string, V3>;
+const LEFT_GRIP = { fingers: [-0.85, 0.1, 0.5], palm: [-0.15, 1, 0] } satisfies Record<string, V3>;
+/** metres from the wrist to the middle of the palm, and from the bones of the hand to its skin */
+const PALM = 0.085, FLESH = 0.022;
+/** a reload, as shares of the time it takes: the left hand to the magazine, out with it, a new one, back in, and back to the handguard */
+const RELOAD = [0.16, 0.38, 0.56, 0.8, 0.9];
 const UP = new THREE.Vector3(0, 1, 0);
 type Q = { x: number; y: number; z: number; w: number };
 /** (x, y, z) turned by q */
@@ -151,8 +168,22 @@ export class Fighter {
   yaw = 0;
   /** holding the hockey stick */
   armed = false;
-  /** holding a rifle: shouldered, and no blows thrown */
-  gun = false;
+  /** the rifle they hold, if any: shouldered, and no blows thrown */
+  gun: Gun | null = null;
+  /** where the rifle is pointed, in the world */
+  readonly aim = new THREE.Vector3(0, 0, 1);
+  /** the rifle as it is held this frame: where its grip is and how it is turned, and how far out of it the magazine is */
+  readonly gunAt = new THREE.Vector3();
+  readonly gunTurn = new THREE.Quaternion();
+  readonly magOut = new THREE.Vector3();
+  /** the last round's kick into the shoulder, 1 as it is fired and dying away */
+  kick = 0;
+  /** how far through changing the magazine, 0 to 1; 0 when not */
+  reloading = 0;
+  /** seconds more the rifle is kept up at the shoulder whatever the legs are doing: firing, or looking down the sights */
+  raise = 0;
+  /** how far the rifle is let down across the body, 0 to 1: nobody sprints with one at the shoulder */
+  private lowered = 0;
   /** someone lies at their feet, in front of them: a kick is a stamp */
   stompable = false;
   /** someone standing right up against them: a kick is a knee */
@@ -181,6 +212,8 @@ export class Fighter {
   freeze = 0;
   /** they have bled where they lie */
   pooled = false;
+  /** seconds more they go on bleeding from a round they have taken */
+  bleeding = 0;
 
   private prev = new THREE.Vector3();
   private cur = new THREE.Vector3();
@@ -218,7 +251,10 @@ export class Fighter {
     this.t = this.balance = this.daze = this.queuedFor = this.struck = this.stance = this.still = this.twist = this.freeze = 0;
     this.health = 100;
     this.calm = this.unhurt = this.since = 99;
-    this.armed = this.pooled = this.stompable = this.close = this.gun = false;
+    this.armed = this.pooled = this.stompable = this.close = false;
+    this.gun = null;
+    this.kick = this.reloading = this.raise = this.lowered = this.bleeding = 0;
+    figure.heal();
     this.move = this.queued = this.last = null;
     this.hitBy = null;
     this.yaw = yaw;
@@ -441,10 +477,72 @@ export class Fighter {
     return { damage, zone, blocked };
   }
 
+  /**
+   * The rifle brought up: the butt in the hollow of the right shoulder, the barrel along the aim, the body turned
+   * a little side-on behind it and bent at the waist to follow it up and down, the head down to the sights, and
+   * each arm bent so its hand is where it holds the rifle. Laid over the pose for this frame only.
+   */
+  private shoulder(figure: Figure, gun: Gun, dt: number) {
+    const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
+    const left = _left.set(cos, 0, -sin), fwd = _fwd.set(sin, 0, cos);
+    this.kick *= Math.exp(-16 * dt);
+    const r = this.reloading;
+    // the rifle comes down and rolls its magazine towards the left hand while that is changed
+    const down = r > 0 ? smooth(r / 0.12) * smooth((1 - r) / 0.12) : 0;
+    // at a run it is carried low across the body, the muzzle down and to the left, and comes up again to fire
+    const v = this.body.body.linvel();
+    this.raise -= dt;
+    this.lowered += ((Math.hypot(v.x, v.z) > 4.2 && this.raise <= 0 && r <= 0 ? 1 : 0) - this.lowered) * damp(9, dt);
+    const low = smooth(this.lowered);
+    const pitch = Math.asin(clamp(this.aim.y, -1, 1)) * (1 - low);
+
+    figure.overlay();
+    // side-on: the right shoulder back, the head left looking where the rifle does
+    const side = 1 - low;
+    figure.bend(SPINE1, UP, -0.24 * side);
+    figure.bend(SPINE2, UP, -0.24 * side);
+    figure.bend(NECK, UP, 0.26 * side);
+    figure.bend(HEAD_BONE, UP, 0.2 * side);
+    // up and down from the waist, the head a little more: the eye stays behind the sights
+    for (const [bone, share] of [[SPINE, 0.15], [SPINE1, 0.2], [SPINE2, 0.2], [NECK, 0.15], [HEAD_BONE, 0.15]] as const) figure.bend(bone, left, -pitch * share);
+    // the cheek to the stock: the head forward and down, and tipped over to the right
+    figure.bend(SPINE2, left, 0.08 * side);
+    figure.bend(NECK, left, 0.22 * side);
+    figure.bend(NECK, fwd, 0.14 * side);
+    figure.bend(HEAD_BONE, fwd, 0.12 * side);
+    figure.refresh();
+
+    // the rifle: along the aim, kicked up a little by the last round, tipped over for a reload
+    _v.copy(this.aim).lerp(_mid.copy(fwd).multiplyScalar(0.55).addScaledVector(left, 0.55).addScaledVector(UP, -0.65), low).normalize();
+    const turn = this.gunTurn.setFromRotationMatrix(_look.lookAt(_v, ORIGIN, UP));
+    turn.multiply(_tilt.setFromEuler(_euler.set(down * 0.32 - this.kick * 0.03, down * 0.12, down * 0.4 + low * 0.35)));
+    const at = (p: V3, out: THREE.Vector3) => out.set(p[0], p[1], p[2]).applyQuaternion(turn);
+    figure.at(RIGHT_ARM, this.gunAt).addScaledVector(left, 0.04).addScaledVector(fwd, 0.035 - this.kick * 0.02 - down * 0.02).addScaledVector(UP, 0.03 - down * 0.05 - low * 0.16).addScaledVector(left, low * 0.05).sub(at(gun.butt, _v));
+
+    // the right hand on the grip, the elbow down and out
+    at(RIGHT_GRIP.fingers, _fingers).normalize();
+    at(RIGHT_GRIP.palm, _palm).addScaledVector(_fingers, -_palm.dot(_fingers)).normalize();
+    at(RIGHT_GRIP.at, _at).add(this.gunAt).addScaledVector(_fingers, -PALM).addScaledVector(_palm, -FLESH);
+    figure.reach(RIGHT_ARM, _at, _pole.set(0, -1, 0).addScaledVector(left, -0.75).addScaledVector(fwd, -0.3), _fingers, _palm);
+
+    // the left hand under the handguard; on a reload it goes to the magazine, down to the belt with it, and back
+    const [reachMag, magDown, fresh, magIn, back] = RELOAD;
+    const go = r <= 0 ? 0 : r < reachMag ? smooth(r / reachMag) : r < magIn ? 1 : 1 - smooth((r - magIn) / (back - magIn));
+    const away = r < reachMag || r >= magIn ? 0 : r < magDown ? smooth((r - reachMag) / (magDown - reachMag)) : r < fresh ? 1 : 1 - smooth((r - fresh) / (magIn - fresh));
+    this.magOut.set(0.03, -0.26, -0.04).multiplyScalar(away);
+    at(LEFT_GRIP.fingers, _fingers).normalize();
+    at(LEFT_GRIP.palm, _palm).addScaledVector(_fingers, -_palm.dot(_fingers)).normalize();
+    _v.set(gun.support[0], gun.support[1], gun.support[2]).lerp(_mid.set(gun.magazine[0], gun.magazine[1], gun.magazine[2]), go).add(this.magOut);
+    _at.copy(_v).applyQuaternion(turn).add(this.gunAt).addScaledVector(_fingers, -PALM * 0.6).addScaledVector(_palm, -FLESH * 0.5);
+    figure.reach(LEFT_ARM, _at, _pole.set(0, -1, 0).addScaledVector(left, 0.45).addScaledVector(fwd, -0.2), _fingers, _palm);
+  }
+
   /** Every frame: the state they are in runs its course, and the figure is moved to match. `blend` is how far between two physics steps the picture is. */
   update(dt: number, blend: number, ring: Ring) {
     const figure = this.figure;
     if (!this.on || !figure) return;
+    figure.unlay();
+    figure.bleed(dt);
     // held for a moment by a blow landing
     if (this.freeze > 0) {
       this.freeze -= dt;
@@ -510,7 +608,7 @@ export class Fighter {
     if (run > 0) mix(_a, _a, mix(_b, figure.source.run[frame], figure.source.run[next], part), run);
     mix(this.target, poses.stand, _a, clamp(speed / 0.5, 0, 1));
     // squared up and not going anywhere: on the balls of bent legs, the left foot forward (a blow's own legs come over this)
-    const squared = this.gun ? 0 : this.stance * clamp(1 - speed / 1.2, 0, 1) * (this.armed ? 0.6 : 1);
+    const squared = (this.gun ? 0.75 : this.stance * (this.armed ? 0.6 : 1)) * clamp(1 - speed / 1.2, 0, 1);
     if (squared > 0.01) mix(this.target, this.target, poses.fightStance, squared);
 
     // arms and back, or the whole body: whatever the fight asks of them
@@ -558,6 +656,8 @@ export class Fighter {
       _axis.copy(sway.lean).divideScalar(angle);
       for (const [bone, share] of bones) figure.bend(bone, _axis, angle * share);
     }
+    figure.close(0, this.gun ? 1.05 : undefined);
+    if (this.gun) this.shoulder(figure, this.gun, dt);
     figure.refresh();
 
     // the fist, the foot, or the far end of the stick: where it is, and how fast it is really going

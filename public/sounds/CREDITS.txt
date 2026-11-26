@@ -4,5 +4,32 @@ crash-1.mp3  "Clank Car Crash Collision" by qubodup, https://freesound.org/peopl
 crash-2.mp3  "Car Crash" by squareal, https://freesound.org/people/squareal/sounds/237375/ (CC0). Trimmed to 3 s.
 crash-3.mp3  "Car Crash (with Glass)" by magnuswaker, https://freesound.org/people/magnuswaker/sounds/592388/ (CC0)
 
+guns/, voices/: all from Freesound, all CC0; each cut to the take used, mixed to mono, and levelled.
+  guns/m416-shot           "AR15 rifle shot" by michorvath, https://freesound.org/people/michorvath/sounds/427596/
+  guns/akm-shot            "An AK-47 being shot ... punchy sounding" by seroutonin--deprived, https://freesound.org/s/855842/
+  guns/m416-reload         "Assault Rifle Reload" by Kodack, https://freesound.org/people/Kodack/sounds/256912/
+  guns/akm-reload          "AK-47 Assault Rifle being unloaded and reloaded" by seroutonin--deprived, https://freesound.org/s/674742/
+  guns/dry                 "Rifle clip empty" by michorvath, https://freesound.org/people/michorvath/sounds/427603/
+  guns/draw                "Gun Cocking Sound.wav" by ricexzeeb, https://freesound.org/people/ricexzeeb/sounds/262598/
+  guns/flesh-1..5          "VisceralBulletImpacts.wav" by u1769092, https://freesound.org/people/u1769092/sounds/423301/
+  guns/headshot            "Headshot.wav" by Pablobd, https://freesound.org/people/Pablobd/sounds/511194/
+  guns/ricochet-1..4       "ricochet.mp3" by cedarstudios, https://freesound.org/people/cedarstudios/sounds/148840/
+  guns/ricochet-5          "Ricochet 2.wav" by morganpurkis, https://freesound.org/people/morganpurkis/sounds/392975/
+  guns/ricochet-6          "Bullet_Ricochet_01" by Artmasterrich, https://freesound.org/people/Artmasterrich/sounds/345413/
+  voices/man-hurt-1..3     "Hurt 1/2/3 - (Male)" by Christopherderp, https://freesound.org/people/Christopherderp/sounds/342229/ (and 342230, 342231)
+  voices/man-hurt-4        "Male Grunting In Pain" by elynch0901, https://freesound.org/people/elynch0901/sounds/464486/
+  voices/man-hurt-5        "male_hurt9.ogg" by micahlg, https://freesound.org/people/micahlg/sounds/413186/
+  voices/man-grunt-1       "Voice_AdultMale_PainGrunts_09.wav" by MrFossy, https://freesound.org/people/MrFossy/sounds/547209/
+  voices/man-grunt-2       "Oof (original)" by unfa, https://freesound.org/people/unfa/sounds/719053/
+  voices/man-death-1       "Male_Death_04" by Artmasterrich, https://freesound.org/people/Artmasterrich/sounds/345456/
+  voices/man-death-2       "Male Death Sound" by Blankened, https://freesound.org/people/Blankened/sounds/554443/
+  voices/man-death-3       "Male Death 4" by scorpion67890, https://freesound.org/people/scorpion67890/sounds/396801/
+  voices/man-scream-1      "Victim Screaming" by qubodup, https://freesound.org/people/qubodup/sounds/813310/
+  voices/woman-grunt-1     "grunt.wav" by Reitanna, https://freesound.org/people/Reitanna/sounds/242623/
+  voices/woman-hurt-1      "Woman getting pain" by Guinamun, https://freesound.org/people/Guinamun/sounds/796094/
+  voices/woman-scream-1    "Girl Screaming_01.wav" by tomattka, https://freesound.org/people/tomattka/sounds/400183/
+  voices/woman-scream-2    "Female scream 02" by missozzy, https://freesound.org/people/missozzy/sounds/169811/
+  voices/woman-scream-3    "WomanScream.wav" by Archeos, https://freesound.org/people/Archeos/sounds/261419/
+
 Engines (src/audio/engine.ts) are synthesised, after the combustion synth in mrdoob's slop-newyork,
 https://github.com/mrdoob/slop-newyork (MIT). The colour grade and the warm ground light are after it too.
