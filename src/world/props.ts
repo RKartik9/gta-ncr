@@ -401,6 +401,8 @@ const GONE = new THREE.Matrix4().makeScale(0, 0, 0);
  */
 export class LampLights {
   private lights: THREE.SpotLight[] = [];
+  /** further lamps lit by plain points, past the spots: cheap with clustered lighting, so the street beyond is lit too */
+  private points: THREE.PointLight[] = [];
   /** lamp heads in the map cells currently loaded */
   heads: THREE.Vector3[];
   private timer = 0;
@@ -408,8 +410,14 @@ export class LampLights {
   private best: THREE.Vector3[] = [];
   private dist: number[] = [];
 
-  constructor(scene: THREE.Scene, heads: THREE.Vector3[], count: number) {
+  constructor(scene: THREE.Scene, heads: THREE.Vector3[], count: number, points = 0) {
     this.heads = heads;
+    for (let i = 0; i < points; i++) {
+      const l = new THREE.PointLight(SODIUM, 0, 24, 2);
+      l.position.set(0, -1000, 0);
+      scene.add(l);
+      this.points.push(l);
+    }
     for (let i = 0; i < count; i++) {
       const l = new THREE.SpotLight(SODIUM, 0, 32, 1.05, 0.65, 1.6);
       l.position.set(0, -1000, 0);
@@ -419,15 +427,16 @@ export class LampLights {
     onNight((n) => {
       this.intensity = 130 * THREE.MathUtils.smoothstep(n, 0.3, 0.9);
       for (const l of this.lights) l.intensity = this.intensity;
+      for (const l of this.points) l.intensity = this.intensity * 0.45;
     });
   }
 
   update(dt: number, car: THREE.Vector3) {
     this.timer -= dt;
-    if (this.timer > 0 || this.heads.length < this.lights.length || this.intensity === 0) return;
+    if (this.timer > 0 || this.heads.length < this.lights.length + this.points.length || this.intensity === 0) return;
     this.timer = 0.25;
     // nearest few by insertion into a short list: no sorting thousands of lamps four times a second
-    const k = this.lights.length, best = this.best, dist = this.dist;
+    const k = this.lights.length + this.points.length, best = this.best, dist = this.dist;
     best.length = dist.length = 0;
     for (const h of this.heads) {
       const d = (h.x - car.x) ** 2 + (h.z - car.z) ** 2;
@@ -446,6 +455,8 @@ export class LampLights {
       l.position.copy(h);
       l.target.position.set(h.x, 0, h.z);
     });
+    // just under the head, so the pole and the canopy above are not lit brighter than the road
+    this.points.forEach((l, i) => l.position.copy(best[this.lights.length + i]).setY(best[this.lights.length + i].y - 0.6));
   }
 }
 

@@ -4,6 +4,7 @@ import { ssao } from 'three/addons/tsl/display/SSAONode.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
+import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
 import type { Quality } from '../config.ts';
 
 export async function createRenderer(canvas: HTMLCanvasElement, quality: Quality, forceWebGL: boolean) {
@@ -18,6 +19,9 @@ export async function createRenderer(canvas: HTMLCanvasElement, quality: Quality
   renderer.toneMappingExposure = 0.8;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
+  // Forward+ on WebGPU: plain point lights (headlight pools, far lamps) cost only where they reach, so there can be
+  // dozens. Spots and the sun are lit as before. WebGL has no compute for it.
+  if (!forceWebGL && backendName(renderer) === 'WebGPU') renderer.lighting = new ClusteredLighting(256, 32, 24, 32);
   return renderer;
 }
 

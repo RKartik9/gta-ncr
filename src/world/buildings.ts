@@ -5,6 +5,7 @@ import type { Chunk, Chunks } from './chunks.ts';
 import { type Budget, cached, hash01, ringArea } from '../util.ts';
 import { Instances, instanced } from '../render/instances.ts';
 import { onNight } from '../render/sky.ts';
+import { windowInteriors } from '../render/interiors.ts';
 import { CLEARINGS } from './landmarks.ts';
 import { CITY } from '../config.ts';
 import { type Facade, colonialFacade, colonnadeTexture, glassFacade, lutyensFacade, officeFacade, plasterFacade, roofTexture, sandstoneFacade, shopfrontTexture } from '../render/textures.ts';
@@ -275,7 +276,17 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
     chunks.addLayer(g, material, name, true);
     if (budget.due) await budget.wait();
   };
-  const facadeMaterial = (f: Facade, envMapIntensity = 1, glow = 2.2) => cached(`m-facade-${f.map.uuid}`, () => {
+  /** `rooms`: the windows look into lit rooms (windowInteriors) rather than the texture's painted lights; shop signs keep those */
+  const facadeMaterial = (f: Facade, envMapIntensity = 1, glow = 2.2, rooms = false) => cached(`m-facade-${f.map.uuid}`, () => {
+    if (rooms) {
+      const m = new THREE.MeshStandardNodeMaterial({
+        map: f.map, roughnessMap: f.orm, metalnessMap: f.orm, roughness: 1, metalness: 1, vertexColors: true, envMapIntensity,
+      });
+      const inside = windowInteriors(f.orm, f.bays, f.floors, f.width / f.bays, f.height / f.floors);
+      m.emissiveNode = inside.emissive;
+      onNight((n) => (inside.glow.value = glow * n));
+      return m;
+    }
     const m = new THREE.MeshStandardMaterial({
       map: f.map, roughnessMap: f.orm, metalnessMap: f.orm, roughness: 1, metalness: 1, vertexColors: true, envMapIntensity,
       emissive: 0xffffff, emissiveMap: f.glow, emissiveIntensity: 0,
@@ -283,12 +294,12 @@ export async function buildBuildings(tile: Tile, plaza: [number, number], chunks
     onNight((n) => (m.emissiveIntensity = glow * n));
     return m;
   });
-  await add(walls.colonial, facadeMaterial(facades.colonial, 1, 1.3), 'walls-colonial');
-  await add(walls.office, facadeMaterial(facades.office), 'walls-office');
-  await add(walls.glass, facadeMaterial(facades.glass, 1.3, 1.6), 'walls-glass');
-  await add(walls.plaster, facadeMaterial(facades.plaster, 1, 1.8), 'walls-plaster');
-  await add(walls.lutyens, facadeMaterial(facades.lutyens, 1, 1.2), 'walls-lutyens');
-  await add(walls.sandstone, facadeMaterial(facades.sandstone, 1, 1.4), 'walls-sandstone');
+  await add(walls.colonial, facadeMaterial(facades.colonial, 1, 1.3, true), 'walls-colonial');
+  await add(walls.office, facadeMaterial(facades.office, 1, 2.2, true), 'walls-office');
+  await add(walls.glass, facadeMaterial(facades.glass, 1.3, 1.6, true), 'walls-glass');
+  await add(walls.plaster, facadeMaterial(facades.plaster, 1, 1.8, true), 'walls-plaster');
+  await add(walls.lutyens, facadeMaterial(facades.lutyens, 1, 1.2, true), 'walls-lutyens');
+  await add(walls.sandstone, facadeMaterial(facades.sandstone, 1, 1.4, true), 'walls-sandstone');
   await add(walls.shed, cached('m-shed', () => new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.5, vertexColors: true })), 'walls-shed');
   await add(walls.stone, cached('m-stone', () => {
     // old stonework is floodlit after dark

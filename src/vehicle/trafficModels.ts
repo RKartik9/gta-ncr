@@ -35,8 +35,12 @@ export interface TrafficKind {
   shape: () => TrafficShape;
 }
 
-// mostly white and silver, as on Delhi's roads
-const CAR_COLOURS = [0xf2f2f0, 0xf2f2f0, 0xf2f2f0, 0xb8bcc0, 0xb8bcc0, 0x55595e, 0x1a1c1e, 0x8e1418, 0x1f3f7a, 0x6d6f4a];
+// white and silver lead, as on Delhi's roads, but a good third of cars carry a colour: reds, blues, a fiery orange,
+// beige and bronze, a few dark greens and the odd yellow
+const CAR_COLOURS = [
+  0xf2f2f0, 0xf2f2f0, 0xf2f2f0, 0xb8bcc0, 0xb8bcc0, 0x55595e, 0x1a1c1e,
+  0xa3161c, 0x6e1020, 0x1f3f7a, 0x2f6fb5, 0xd45a12, 0xc9b48a, 0x7a5232, 0x2c4a33, 0xe3b81b, 0x8a8f5a,
+];
 
 const car = (spec: CarSpec): TrafficKind => ({
   id: spec.id, length: spec.length, width: spec.width, height: spec.height, mass: spec.mass, centreOfMass: spec.centreOfMass,
