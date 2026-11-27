@@ -255,7 +255,8 @@ async function boot() {
 
   const sound = new Sound();
   const earAhead = new THREE.Vector3(), aimDir = new THREE.Vector3();
-  let warmFrames = 0;
+  /** the figures' meshes still to be drawn once out of sight (see the frame loop); null when there are none */
+  let warmQueue: THREE.Object3D[] | null = null;
   sound.setCar(model.spec);
   const music = new Music();
   music.resumeOnGesture();
@@ -683,20 +684,24 @@ async function boot() {
     }
 
     // compileAsync makes the main pass's shaders, not the shadow's or the ambient occlusion's: the figures and the
-    // rifles are drawn for real for two frames, a thousandth of their size in front of the camera, so the first time
-    // the player gets out is not a quarter-second stall
-    const warming = warmFrames > 0 && !combat.onFoot;
-    if (warming) {
+    // rifles are drawn for real, a thousandth of their size in front of the camera, so the first time the player gets
+    // out is not a stall. One more mesh each frame, then the rifles: all at once it froze the game for most of a second.
+    // out of the car before it is done: the figures may be needed now, whole
+    if (warmQueue && combat.onFoot) for (const m of warmQueue.splice(0)) m.visible = true;
+    const warmNext = warmQueue && !combat.onFoot ? (warmQueue.shift() ?? 'rifles') : null;
+    if (warmNext) {
       camera.getWorldDirection(aimDir);
       combat.warm.position.copy(camera.position).addScaledVector(aimDir, 5);
       combat.warm.scale.setScalar(0.001);
       scene.add(combat.warm);
-      combat.armoury.warm(combat.warm.position);
+      if (warmNext === 'rifles') combat.armoury.warm(combat.warm.position);
+      else warmNext.visible = true;
     }
     pipeline.render();
-    if (warming && --warmFrames === 0) {
+    if (warmNext === 'rifles') {
       scene.remove(combat.warm);
       combat.armoury.warm(null);
+      warmQueue = null;
     }
     governor(dt, performance.now() - began);
 
@@ -705,7 +710,12 @@ async function boot() {
       hideLoading();
       prefetchNext();
       // the people who can be fought, drawn once out of sight: nobody waits for shaders at the first punch
-      void combat.ready.then(() => renderer.compileAsync(combat.warm, camera, scene)).then(() => (warmFrames = 2)).catch((err) => console.warn('Figures not readied', err));
+      void combat.ready.then(() => renderer.compileAsync(combat.warm, camera, scene)).then(() => {
+        const meshes: THREE.Object3D[] = [];
+        combat.warm.traverse((o) => (o as THREE.Mesh).isMesh && o.visible && meshes.push(o));
+        for (const m of meshes) m.visible = false;
+        warmQueue = meshes;
+      }).catch((err) => console.warn('Figures not readied', err));
       if (gpu.kind === 'software' || otherCard) hud.say(`Drawing on ${gpu.name}: slow graphics. Esc › Graphics says how to use a faster card.`, 9000);
     }
     perf.frames++;

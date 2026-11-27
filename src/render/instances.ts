@@ -13,9 +13,15 @@ const place = Fn(() => {
   return a.mul(positionLocal.x).add(b.mul(positionLocal.y)).add(c.mul(positionLocal.z)).add(attribute('it', 'vec3'));
 });
 
-/** Makes a material draw `Instances`. `tinted` multiplies in each copy's own colour. */
-export function instanced<T extends THREE.NodeMaterial>(material: T, tinted = false): T {
-  material.positionNode = place();
+/**
+ * Makes a material draw `Instances`. `tinted` multiplies in each copy's own colour. `shape`, run first in the vertex
+ * shader, may set `positionLocal` and `normalLocal` itself (each copy in a pose of its own).
+ */
+export function instanced<T extends THREE.NodeMaterial>(material: T, tinted = false, shape?: () => void): T {
+  material.positionNode = shape ? Fn(() => {
+    shape();
+    return place();
+  })() : place();
   if (tinted) material.colorNode = materialColor.mul(vec4(attribute('icol', 'vec3'), 1));
   return material;
 }

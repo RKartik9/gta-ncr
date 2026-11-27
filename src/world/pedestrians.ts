@@ -2,7 +2,7 @@ import type RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Road } from './tile.ts';
-import { attribute, luminance, materialColor, mix, step } from 'three/tsl';
+import { attribute, luminance, materialColor, mix, normalLocal, positionLocal, step, textureLoad, uint, uvec2, vertexIndex } from 'three/tsl';
 import { Instances, instanced } from '../render/instances.ts';
 import { type Pose, type V3, posedFigures } from '../vehicle/rider.ts';
 
@@ -115,7 +115,7 @@ export function walkPose(k: number, stride = 1): Pose {
  * texture's light and shade kept, its colour swapped for the copy's own (top: its colour, bottom: its spare numbers),
  * so six figures make a street of different people.
  */
-function nodeMaterial(m: THREE.Material) {
+function nodeMaterial(m: THREE.Material, pose: () => void) {
   const src = m as THREE.MeshStandardMaterial;
   const node = new THREE.MeshStandardNodeMaterial({
     color: src.color, map: src.map, normalMap: src.normalMap, roughness: src.roughness, metalness: src.metalness,
@@ -127,7 +127,7 @@ function nodeMaterial(m: THREE.Material) {
     const tint = attribute(dye, 'vec3');
     node.colorNode = mix(materialColor, luminance(materialColor).mul(1.7).mul(tint).min(1), step(0.001, tint.x.add(tint.y).add(tint.z)).mul(0.85));
   }
-  return instanced(node);
+  return instanced(node, false, pose);
 }
 
 // What Delhi wears: white and pastel kurtas and shirts, saffron, maroon, mustard, a pink or green saree, black and navy;
@@ -136,7 +136,16 @@ const TOPS = [0xf2efe6, 0xf2efe6, 0x9cc3e0, 0x7a1f2b, 0xe8892b, 0xd9a521, 0xd657
 const BOTTOMS = [0x2a3a5a, 0x2a3a5a, 0x1c1c1e, 0x8a7a5a, 0x5a5e66, 0xeeeae0, 0x6a4a32, 0x3d4a2e];
 const pick = (list: number[]) => new THREE.Color(list[Math.floor(Math.random() * list.length)]);
 
-/** One figure's walk cycle, frozen frame by frame: an `Instances` per frame, standing on the ground at `height` metres tall. */
+/** Texels a row in a figure's pose texture. */
+const POSE_WIDTH = 2048;
+
+/**
+ * One figure's walk cycle, frozen frame by frame, standing on the ground at `height` metres tall: a single
+ * `Instances` for the whole crowd of that figure. Every frame has the same vertices in the same order, only placed
+ * differently, so where each vertex is in each frame goes in a texture and each copy's vertex shader reads the
+ * frame that copy is in (attribute `iframe`). One mesh per frame instead meant nearly every walker was a mesh of
+ * its own, ten or so draws (one per material) in each of the four passes: a thousand draws, the most of any frame.
+ */
 async function walkCycle(file: string, height: number, count: number, scene: THREE.Scene) {
   const figures = await posedFigures([...Array.from({ length: FRAMES }, (_, k) => walkPose(k)), walkPose(0, 0)], file);
   // feet on the ground (the lowest point of any frame) and brought to the height asked for
@@ -145,8 +154,7 @@ async function walkCycle(file: string, height: number, count: number, scene: THR
   const fit = new THREE.Matrix4().makeScale(...(Array(3).fill(height / (box.max.y - box.min.y)) as V3)).multiply(new THREE.Matrix4().makeTranslation(0, -box.min.y, 0));
   const materials: THREE.Material[] = [];
   for (const f of figures) f.traverse((o) => (o as THREE.Mesh).isMesh && !materials.includes((o as THREE.Mesh).material as THREE.Material) && materials.push((o as THREE.Mesh).material as THREE.Material));
-  const nodes = materials.map(nodeMaterial);
-  return figures.map((figure) => {
+  const shapes = figures.map((figure) => {
     const parts = materials.map((mat) => {
       const list: THREE.BufferGeometry[] = [];
       figure.traverse((o) => {
@@ -160,14 +168,41 @@ async function walkCycle(file: string, height: number, count: number, scene: THR
       });
       return mergeGeometries(list)!;
     });
-    const mesh = new Instances(mergeGeometries(parts, true)!, nodes, Array(count).fill(new THREE.Matrix4()), true);
-    mesh.castShadow = true;
-    mesh.frustumCulled = false;
-    mesh.geometry.instanceCount = 0;
-    mesh.visible = false;
-    scene.add(mesh);
-    return mesh;
+    return mergeGeometries(parts, true)!;
   });
+  const verts = shapes[0].attributes.position.count;
+  if (shapes.some((s) => s.attributes.position.count !== verts)) throw new Error('its frames do not have the same vertices');
+  const rows = Math.ceil((shapes.length * verts) / POSE_WIDTH);
+  const where = new Float32Array(POSE_WIDTH * rows * 4), facing = new Float32Array(POSE_WIDTH * rows * 4);
+  shapes.forEach((shape, f) => {
+    const p = shape.attributes.position.array, n = shape.attributes.normal.array;
+    for (let v = 0; v < verts; v++) {
+      const o = (f * verts + v) * 4;
+      where.set([p[v * 3], p[v * 3 + 1], p[v * 3 + 2], 1], o);
+      facing.set([n[v * 3], n[v * 3 + 1], n[v * 3 + 2], 0], o);
+    }
+  });
+  const texture = (data: Float32Array) => {
+    const t = new THREE.DataTexture(data, POSE_WIDTH, rows, THREE.RGBAFormat, THREE.FloatType);
+    t.needsUpdate = true;
+    return t;
+  };
+  const whereTex = texture(where), facingTex = texture(facing);
+  const pose = () => {
+    const i = attribute('iframe', 'float').toUint().mul(uint(verts)).add(vertexIndex);
+    const at = uvec2(i.mod(uint(POSE_WIDTH)), i.div(uint(POSE_WIDTH)));
+    positionLocal.assign(textureLoad(whereTex, at).xyz);
+    normalLocal.assign(textureLoad(facingTex, at).xyz);
+  };
+  const mesh = new Instances(shapes[0], materials.map((m) => nodeMaterial(m, pose)), Array(count).fill(new THREE.Matrix4()), true);
+  for (const s of shapes.slice(1)) s.dispose();
+  mesh.geometry.setAttribute('iframe', new THREE.InstancedBufferAttribute(new Float32Array(count), 1).setUsage(THREE.DynamicDrawUsage));
+  mesh.castShadow = true;
+  mesh.frustumCulled = false;
+  mesh.geometry.instanceCount = 0;
+  mesh.visible = false;
+  scene.add(mesh);
+  return mesh;
 }
 
 /**
@@ -180,8 +215,8 @@ export class Pedestrians {
   private sides: Side[] = [];
   private buckets = new Map<string, number[]>();
   private walkers: Walker[] = [];
-  /** per figure, its walk cycle's frames */
-  private frames: Instances[][] = [];
+  /** per figure, everyone walking in it, each in their own frame of its walk cycle */
+  private frames: Instances[] = [];
   /** per figure, the file it came from and how tall it stands */
   private kinds: [string, number][] = [];
   /** asked when the player's car runs someone down at (vx, vz) m/s: true if they are taken to be thrown for real */
@@ -215,7 +250,7 @@ export class Pedestrians {
       console.warn(`Pedestrian ${file} could not be loaded`, err);
       return null;
     }))).then((cycles) => {
-      this.frames = cycles.filter((c): c is Instances[] => !!c);
+      this.frames = cycles.filter((c): c is Instances => !!c);
       this.kinds = FIGURES.filter((_, i) => cycles[i]);
       this.ready = this.frames.length > 0;
     });
@@ -667,11 +702,12 @@ export class Pedestrians {
   }
 
   private draw(px: number, pz: number) {
-    const counts = this.frames.map((frames) => frames.map(() => 0));
+    const counts = this.frames.map(() => 0);
     for (const w of this.walkers) {
       if (!w.on || w.state === 'taken' || Math.hypot(w.x - px, w.z - pz) > DRAWN) continue;
       const f = w.state === 'down' ? 0 : w.state === 'idle' || w.state === 'wait' ? FRAMES : Math.floor(w.phase * FRAMES) % FRAMES;
-      const mesh = this.frames[w.figure][f], i = counts[w.figure][f]++;
+      const mesh = this.frames[w.figure], i = counts[w.figure]++;
+      mesh.geometry.attributes.iframe.setX(i, f);
       this.q.setFromAxisAngle(this.up, w.yaw);
       // knocked down: laid on their back along the way they were thrown
       if (w.state === 'down') this.q.multiply(new THREE.Quaternion().setFromAxisAngle(this.xAxis, -Math.PI / 2 * Math.min(1, (3.5 - w.timer) * 3)));
@@ -679,11 +715,12 @@ export class Pedestrians {
       mesh.setColorAt(i, w.top);
       mesh.setExtraAt(i, w.bottom.r, w.bottom.g, w.bottom.b);
     }
-    // only the walkers in each frame are drawn, and a frame nobody is in is not drawn at all
-    this.frames.forEach((frames, k) => frames.forEach((mesh, f) => {
-      mesh.geometry.instanceCount = counts[k][f];
-      mesh.visible = counts[k][f] > 0;
+    // only as many copies as there are walkers in that figure are drawn, and a figure nobody is in is not drawn at all
+    this.frames.forEach((mesh, k) => {
+      mesh.geometry.instanceCount = counts[k];
+      mesh.visible = counts[k] > 0;
       mesh.instanceMatrix.needsUpdate = true;
-    }));
+      mesh.geometry.attributes.iframe.needsUpdate = true;
+    });
   }
 }

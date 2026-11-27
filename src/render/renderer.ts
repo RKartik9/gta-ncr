@@ -22,7 +22,26 @@ export async function createRenderer(canvas: HTMLCanvasElement, quality: Quality
   // Forward+ on WebGPU: plain point lights (headlight pools, far lamps) cost only where they reach, so there can be
   // dozens. Spots and the sun are lit as before. WebGL has no compute for it.
   if (!forceWebGL && backendName(renderer) === 'WebGPU') renderer.lighting = new ClusteredLighting(256, 32, 24, 32);
+  compileInBackground(renderer);
   return renderer;
+}
+
+/**
+ * The first time anything is drawn in a new way (a cell's walls, a car, a figure, any of them in the shadow pass)
+ * the graphics driver compiles a pipeline for it, and three.js waits for that on the spot: the whole game froze for
+ * a second or more each time, far longer on Windows, where every shader is compiled again for Direct3D. Here every
+ * draw asks for its pipeline the way `compileAsync` does: the driver compiles it in the background and three.js
+ * leaves that one object out of the picture until it is ready, a frame or two later.
+ * ponytail: reaches into three.js internals (`_pipelines`, r186); recheck on a three.js upgrade.
+ */
+function compileInBackground(renderer: THREE.WebGPURenderer) {
+  const pipelines = (renderer as unknown as { _pipelines: { getForRender(o: unknown, promises: Promise<void>[] | null): unknown; updateForRender(o: unknown): void } })._pipelines;
+  // three.js only needs somewhere to put the promises; nobody waits on them
+  const ignored: Promise<void>[] = [];
+  pipelines.updateForRender = (renderObject) => {
+    pipelines.getForRender(renderObject, ignored);
+    ignored.length = 0;
+  };
 }
 
 /**
