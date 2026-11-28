@@ -2,6 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three/webgpu';
 import type { CarSpec } from '../vehicle/cars.ts';
 import { FIGURES, type Pedestrians, type Walker } from '../world/pedestrians.ts';
+import { shout } from '../hud/shouts.ts';
 import { STRIKE_GROUPS } from '../world/physics.ts';
 import type { Traffic } from '../world/traffic.ts';
 import { clamp } from '../util.ts';
@@ -127,6 +128,8 @@ export class Combat implements Ring {
   private reloading = 0;
   /** screams on their way: who by (how high their voice is), where, and in how many seconds */
   private cries: { wait: number; x: number; z: number; voice: number }[] = [];
+  /** seconds to the next scream from a street in panic */
+  private wail = 0;
   private wasHeld = false;
   /** the rifle's muzzle */
   private muzzle = new THREE.Vector3();
@@ -445,7 +448,8 @@ export class Combat implements Ring {
     this.hooks.shake(0.015);
     this.hooks.rumble(0.25, 50);
     // gunfire: the street runs, and nobody comes to fight it out. Some of them scream as they go, each in their own moment.
-    for (const w of this.people.scare(me.pos.x, me.pos.z, 45, () => false)) {
+    for (const w of this.people.gunfire(me.pos.x, me.pos.z)) {
+      shout(w, this.people.isWoman(w), 'panic', 0.5);
       if (this.cries.length < 5 && Math.random() < 0.45) this.cries.push({ wait: 0.15 + Math.random() * 1.2, x: w.x, z: w.z, voice: this.voiceOf(this.people.kindOf(w)[0]) });
     }
     for (const [f, npc] of this.npcs) if (f.health > 0 && this.distance(f.pos.x, f.pos.z) < 45) npc.brain.mode = 'flee';
@@ -513,6 +517,8 @@ export class Combat implements Ring {
     const away = this.distance(by.pos.x, by.pos.z);
     this.hooks.sound('swing', m.limb < 0 ? 1 : m.full ? 0.8 : 0.5, away);
     if (m.heavy && Math.random() < 0.55) this.hooks.sound('grunt', 0.7, away, by.voice);
+    // and whoever squares up to the player has plenty to say while they are at it
+    if (by !== this.player && this.npcs.get(by)?.brain.target === this.player) shout(by.pos, by.voice > 1.4, 'fight', 0.3);
   }
 
   strike(by: Fighter, m: Move, at: THREE.Vector3, radius: number, velocity: THREE.Vector3) {
@@ -690,6 +696,7 @@ export class Combat implements Ring {
       slot.voice = this.voiceOf(file);
       // and has something to say about it
       this.hooks.sound('grunt', 1.2, this.distance(p.x, p.z), slot.voice);
+      shout(slot.pos, false, 'angry');
       const brain = new Brain(0.45 + Math.random() * 0.55);
       brain.target = this.player;
       this.npcs.set(slot, { brain, walker: null, file, out: 0 });
@@ -710,6 +717,13 @@ export class Combat implements Ring {
       this.hooks.sound('scream', 1, this.distance(c.x, c.z), c.voice);
       return false;
     });
+    // a street in panic after gunfire: somebody screams or shouts every half second or so until it calms down
+    const w = this.people.panic > 0 && (this.wail -= dt) <= 0 ? this.people.panicking(this.where(_p).x, _p.z, 50) : null;
+    if (w) {
+      this.wail = 0.3 + Math.random() * 0.8;
+      this.cries.push({ wait: 0, x: w.x, z: w.z, voice: this.voiceOf(this.people.kindOf(w)[0]) });
+      shout(w, this.people.isWoman(w), 'panic', 0.85);
+    }
     if (dt > 0) this.drivers(dt);
 
     if (this.onFoot && dt > 0) {

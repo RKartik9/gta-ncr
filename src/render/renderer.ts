@@ -141,7 +141,7 @@ export function createPipeline(renderer: THREE.WebGPURenderer, scene: THREE.Scen
   const glow = quality.bloom ? bloom(colour, 0.07, 0.4, 2.2) : null;
   const lit = glow ? colour.add(glow) : colour;
   // Tone map and encode first, then grade on what the eye sees (after mrdoob's slop-newyork, MIT).
-  const look = { contrast: uniform(0.3), saturation: uniform(1.06), warmth: uniform(1) };
+  const look = { contrast: uniform(0.22), saturation: uniform(1.08), warmth: uniform(1) };
   const graded = grade(renderOutput(lit), look);
   // No MSAA on low: FXAA smooths the edges for almost nothing.
   pipeline.outputNode = quality.msaa ? graded : fxaa(graded);
@@ -151,7 +151,7 @@ export function createPipeline(renderer: THREE.WebGPURenderer, scene: THREE.Scen
     /** night: 0 by day, 1 at night. Lamps and windows bloom at night without blowing out the daytime sun on glass. */
     setNight(night: number) {
       // nights a touch flatter and cooler, so lamps carry the colour rather than the grade
-      look.contrast.value = 0.3 - 0.1 * night;
+      look.contrast.value = 0.22 - 0.02 * night;
       look.warmth.value = 1 - night;
       if (!glow) return;
       glow.threshold.value = 2.2 - 1.4 * night;
@@ -167,7 +167,8 @@ export function createPipeline(renderer: THREE.WebGPURenderer, scene: THREE.Scen
 function grade(input: ReturnType<typeof renderOutput>, look: { contrast: UniformNumber; saturation: UniformNumber; warmth: UniformNumber }) {
   const c = input.rgb;
   const l = luminance(c);
-  const cool = vec3(0.985, 1, 1.02), warm = vec3(1.035, 1.005, 0.965);
+  // by day only a breath of warmth in the highlights: the sun is already warm, and more turned noon into evening
+  const cool = vec3(0.985, 1, 1.02), warm = vec3(1.02, 1.003, 0.98);
   const split = mix(cool, mix(vec3(1), warm, look.warmth), smoothstep(0.2, 0.8, l));
   let o = c.mul(split).clamp(0, 1);
   o = mix(o, smoothstep(0, 1, o), look.contrast);

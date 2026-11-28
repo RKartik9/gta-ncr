@@ -7,3 +7,5 @@ shots/
 
 # cut from a local .osm.pbf by `bake.mjs --pbf`: one big file, rebuilt from the extract
 tools/bake/raw/*/extract.json
+tools/voices/models/
+.venv-tts/

@@ -3,12 +3,14 @@ import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
 import { exp, fog, max, positionView, positionWorld, pmremTexture, smoothstep, uniform } from 'three/tsl';
 
 // A clear blue day with a light haze at the horizon, a warm dusk, and a blue-black night lit by sodium lamps.
-const SUN_PEAK = 52; // degrees above the horizon at noon
+// degrees above the horizon at noon: Delhi's noon sun is 60 to 85 degrees up through the year. Lower, the shadows
+// stayed long and the light stayed golden all day, and a morning looked like an evening.
+const SUN_PEAK = 72;
 const HAZE = new THREE.Color(0xb4c6d8); // the horizon's own blue, so distance reads as air rather than smog
 const DUSK = new THREE.Color(0x9a7f6c);
 const NIGHT = new THREE.Color(0x141a24);
 const SUN_LOW = new THREE.Color(0xff9a5a);
-const SUN_HIGH = new THREE.Color(0xffe2bd);
+const SUN_HIGH = new THREE.Color(0xfff3e4);
 const MOON = new THREE.Color(0x9db4ff);
 
 /** Sun direction for an hour of the day: east at 6, south at noon, west at 18, under the ground at night. */
@@ -22,8 +24,8 @@ export function sunAt(hour: number, out = new THREE.Vector3()) {
 function makeSky(showSun: boolean) {
   const sky = new SkyMesh();
   sky.scale.setScalar(10000);
-  sky.turbidity.value = 3.5;
-  sky.rayleigh.value = 1.8;
+  sky.turbidity.value = 2.6;
+  sky.rayleigh.value = 2.2;
   sky.mieCoefficient.value = 0.004;
   sky.mieDirectionalG.value = 0.82;
   sky.cloudCoverage.value = 0.28;
@@ -145,7 +147,8 @@ export class DayNight {
     if (elevation > -3) {
       this.lightDir.copy(dir);
       this.sun.intensity = 5 * smooth(-3, 10, elevation);
-      this.sun.color.copy(SUN_LOW).lerp(SUN_HIGH, smooth(4, 30, elevation));
+      // orange only in the first and last hour of the sun; white the rest of the day
+      this.sun.color.copy(SUN_LOW).lerp(SUN_HIGH, smooth(2, 16, elevation));
     } else {
       sunAt(this.hour + 12, this.lightDir);
       if (this.lightDir.y < 0.45) this.lightDir.setY(0.45).normalize();
@@ -156,16 +159,17 @@ export class DayNight {
 
     const dusk = 1 - Math.abs(smooth(-8, 14, elevation) * 2 - 1);
     this.fogColour.value.copy(HAZE).lerp(NIGHT, n).lerp(DUSK, dusk * 0.6);
-    // sky fill: enough that shaded walls keep their colour by day, a dim moonlit blue by night
-    this.hemi.intensity = 0.45 - 0.3 * n;
+    // sky fill: by day a shadow is lit by the whole bright sky and the sunlit street, so it is blue-grey, never
+    // black; a dim moonlit blue by night
+    this.hemi.intensity = 0.95 - 0.8 * n;
     this.hemi.color.setHex(0xc4d0de).lerp(MOON, n);
     // Swapping scene.environment rebuilt every material's shader (half a second frozen at each dusk and dawn);
     // changing the texture behind one environment node is just a new binding.
     const env = this.envs[elevation > 12 ? 0 : elevation > -6 ? 1 : 2];
     if (this.env.value !== env) this.env.value = env;
-    this.scene.environmentIntensity = 0.28 - 0.1 * n;
+    this.scene.environmentIntensity = 0.45 - 0.27 * n;
     // ACES already lifts by 1/0.6; night needs more so lamps and windows carry the street
-    this.renderer.toneMappingExposure = 0.8 + 0.45 * n;
+    this.renderer.toneMappingExposure = 0.88 + 0.37 * n;
     (this.stars.material as THREE.PointsMaterial).opacity = smooth(0.6, 1, n);
 
     if (Math.abs(n - this.lastNight) > 0.002) {

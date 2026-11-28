@@ -1,0 +1,46 @@
+{
+ "voices": [
+  {
+   "id": "m1",
+   "woman": false
+  },
+  {
+   "id": "m2",
+   "woman": false
+  },
+  {
+   "id": "m3",
+   "woman": false
+  },
+  {
+   "id": "m4",
+   "woman": false
+  },
+  {
+   "id": "m5",
+   "woman": false
+  },
+  {
+   "id": "m6",
+   "woman": false
+  },
+  {
+   "id": "w1",
+   "woman": true
+  },
+  {
+   "id": "w2",
+   "woman": true
+  },
+  {
+   "id": "w3",
+   "woman": true
+  }
+ ],
+ "lines": {
+  "angry": 16,
+  "panic": 11,
+  "gawk": 9,
+  "fight": 10
+ }
+}

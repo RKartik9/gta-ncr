@@ -59,6 +59,8 @@ export class Sound {
   /** the takes of each recorded sound that have loaded, and which was played last */
   private takes = new Map<string, AudioBuffer[]>();
   private lastTake = new Map<string, AudioBuffer>();
+  /** the street's shouted lines, by file, fetched as they are first wanted */
+  private lines = new Map<string, Promise<AudioBuffer | null>>();
   /** when the last scream started: a street running from gunfire is a few voices, not a choir */
   private screamed = -9;
   private engine: EngineVoice | null = null;
@@ -402,6 +404,37 @@ export class Sound {
     // the distant roar: louder the more traffic is about
     const busy = cars.reduce((k, c) => k + (Math.hypot(c.x - e.x, c.z - e.z) < 150 ? 1 : 0), 0);
     this.rumble.gain.gain.setTargetAtTime(Math.min(0.07, 0.012 + busy * 0.003), ctx.currentTime, 0.5);
+  }
+
+  /**
+   * Someone in the street shouting at (x, z): a line of public/sounds/lines (src/hud/shouts.ts), at `rate` for a
+   * voice of their own, placed where they stand and muffled with distance. Each line is fetched the first time it
+   * is wanted, so the first shout of a line comes a moment late.
+   */
+  speak(file: string, rate: number, x: number, z: number) {
+    const ctx = this.ctx, distance = Math.hypot(x - this.ear.x, z - this.ear.z);
+    if (!ctx || distance > 60) return;
+    let line = this.lines.get(file);
+    if (!line) this.lines.set(file, (line = fetch(`${import.meta.env.BASE_URL}sounds/${file}`)
+      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((b) => ctx.decodeAudioData(b))
+      .catch((err) => (console.warn(`sound ${file} failed to load`, err), null))));
+    void line.then((buf) => {
+      if (!buf) return;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.playbackRate.value = rate;
+      const muffle = ctx.createBiquadFilter();
+      muffle.type = 'lowpass';
+      muffle.frequency.value = 12000 / (1 + distance / 25);
+      // a voice raised in the street carries: louder than the recordings levelled for the rest of the game
+      const loud = ctx.createGain();
+      loud.gain.value = 2.4;
+      const panner = this.place(x, z, 9);
+      src.connect(muffle).connect(loud).connect(panner);
+      src.start();
+      src.onended = () => panner.disconnect();
+    });
   }
 
   /**

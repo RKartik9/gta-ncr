@@ -1,5 +1,5 @@
 import type { Pose, V3 } from '../vehicle/rider.ts';
-import { walkPose } from '../world/pedestrians.ts';
+import { runPose, walkPose } from '../world/pedestrians.ts';
 
 // How people on foot hold themselves, in the same terms as the driver's seat (rider.ts): where each bone points,
 // x to the figure's left, y up, z the way it faces. Parents come before children. There are no recorded
@@ -21,26 +21,6 @@ const STANCE: Pose = {
 };
 /** pushing off the back foot into a blow from the right: the heel up and the knee turned in */
 const DRIVE: Pose = { ...STANCE, RightUpLeg: [-0.08, -1, -0.28], RightLeg: [0.1, -1, -0.15], RightFoot: [0.1, -0.7, 1] };
-
-/** One frame of a run: a long stride, the heel coming up behind, elbows bent and pumping. */
-function runPose(k: number): Pose {
-  const a = (k / FRAMES) * Math.PI * 2;
-  const leg = (phase: number): [V3, V3] => {
-    const swing = Math.sin(phase) * 0.8 + 0.15, bend = Math.max(0, Math.sin(phase + 1.3)) * 1.5 + 0.25;
-    return [[0.04, -Math.cos(swing), Math.sin(swing)], [0, -Math.cos(swing - bend), Math.sin(swing - bend)]];
-  };
-  const arm = (phase: number): [V3, V3] => {
-    const swing = -Math.sin(phase) * 0.8;
-    return [[0.14, -Math.cos(swing), Math.sin(swing)], [-0.05, -Math.cos(swing + 1.5), Math.sin(swing + 1.5)]];
-  };
-  const [lu, ll] = leg(a), [ru, rl] = leg(a + Math.PI), [la, lf] = arm(a), [ra, rf] = arm(a + Math.PI);
-  return {
-    Hips: [0, 1, 0.1], Spine: [0, 1, 0.18], Spine1: [0, 1, 0.2], Spine2: [0, 1, 0.2], Neck: [0, 1, 0.1], Head: [0, 1, -0.05],
-    LeftUpLeg: lu, LeftLeg: ll, LeftFoot: [0.03, -0.5, 1],
-    RightUpLeg: [-ru[0], ru[1], ru[2]], RightLeg: [-rl[0], rl[1], rl[2]], RightFoot: [-0.03, -0.5, 1],
-    LeftArm: la, LeftForeArm: lf, RightArm: [-ra[0], ra[1], ra[2]], RightForeArm: [-rf[0], rf[1], rf[2]],
-  };
-}
 
 export const POSES = {
   stand: { ...UPRIGHT, ...LEGS, Arm: [0.16, -1, 0.02], ForeArm: [0.06, -1, 0.2] },
@@ -175,7 +155,7 @@ export const CROUCH_DROP = 0.42;
 /** the strides, frame by frame */
 export const CYCLES = {
   walk: Array.from({ length: FRAMES }, (_, k) => walkPose(k)),
-  run: Array.from({ length: FRAMES }, (_, k) => runPose(k)),
+  run: Array.from({ length: FRAMES }, (_, k) => runPose(k, FRAMES)),
 };
 
 /** Where the stick points from the hands that hold it, in the figure's space, in each of its three poses. */

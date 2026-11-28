@@ -629,6 +629,10 @@ export class Fighter {
     else [upper, rate] = [poses[this.reaction], 22];
     if (upper) mix(this.target, this.target, upper, weight, whole ? undefined : UPPER);
     figure.ease(this.target, damp(rate, dt));
+    // Squared up, the hips sit a little low on bent knees, and stay there through the blows, bobbing only while
+    // waiting. It is where the hips ease to, not something added each frame: added, it piled up to a deep crouch
+    // (deeper the higher the frame rate) that sprang up the moment a punch began, and the player seemed to hop.
+    if (s !== 'dodge') drop = (0.025 + (s === 'move' ? Math.sin(this.bob * 2) * 0.02 : 0)) * this.stance * clamp(1 - speed / 1.2, 0, 1);
     figure.drop += (drop - figure.drop) * damp(14, dt);
 
     // laid over the pose: the turn of the body into the blow, the guard's bob, and whatever the last blow taken is doing to the neck and back
@@ -641,7 +645,6 @@ export class Fighter {
     if (s === 'move' && this.stance > 0.3) {
       _axis.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
       figure.bend(SPINE, _axis, Math.sin(this.bob) * 0.035 * this.stance);
-      figure.drop += (0.025 + Math.sin(this.bob * 2) * 0.02) * this.stance * (speed < 0.8 ? 1 : 0);
     }
     if (this.daze > 0.6) {
       // reeling: the head lolls

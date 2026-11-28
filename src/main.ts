@@ -16,6 +16,7 @@ import { STEP, createPhysics, stepWorld } from './world/physics.ts';
 import { Streamer } from './world/streamer.ts';
 import { Traffic } from './world/traffic.ts';
 import { Pedestrians } from './world/pedestrians.ts';
+import { setSpeaker } from './hud/shouts.ts';
 import { buildLandmarks, neighbourhood } from './world/landmarks.ts';
 import { CARS, type CarSpec, axleHeight, restLength, rideHeight } from './vehicle/cars.ts';
 import { loadGarage, loadImported, setupImporter } from './vehicle/garage.ts';
@@ -307,6 +308,7 @@ async function boot() {
   traffic.walkers = pedestrians.positions;
   pedestrians.vehicles = traffic.positions;
   traffic.onHonk = (x, z, kind, pitch) => sound.honk(x, z, kind, pitch);
+  setSpeaker((file, rate, x, z) => sound.speak(file, rate, x, z));
   bigmap.setTiles([all]);
   const toggleMap = (open = !bigmap.open) => {
     if (open) hud.toggleMenu(false);
@@ -600,6 +602,8 @@ async function boot() {
     {
       // the people on the pavement: a car that runs one down feels it
       const lv = vehicle.body.linvel(), p = current.p;
+      pedestrians.playerOnFoot = combat.onFoot;
+      pedestrians.playerArmed = combat.onFoot && !!combat.weapon;
       const struck = pedestrians.update(paused ? 0 : dt, p.x, p.z, lv.x, lv.z, carPos().x, carPos().z);
       if (struck) {
         sound.crash(struck * 0.4);

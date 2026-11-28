@@ -33,3 +33,8 @@ guns/, voices/: all from Freesound, all CC0; each cut to the take used, mixed to
 
 Engines (src/audio/engine.ts) are synthesised, after the combustion synth in mrdoob's slop-newyork,
 https://github.com/mrdoob/slop-newyork (MIT). The colour grade and the warm ground light are after it too.
+
+lines/: what people in the street shout, spoken by Piper's neural Hindi voices (https://github.com/OHF-Voice/piper1-gpl):
+  hi_IN-pratham-medium and hi_IN-priyamvada-medium (trained by PravalX on AI4Bharat data, CC BY-NC-SA 4.0) and
+  hi_IN-rohan-medium (IIT Madras Indic TTS data, https://www.iitm.ac.in/donlab/indictts/downloads/license.pdf).
+  Made into nine voices by pitch and speed; regenerate with tools/voices/make-lines.py. Non-commercial use only.

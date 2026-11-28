@@ -5,6 +5,7 @@ import type { Road } from './tile.ts';
 import { attribute, luminance, materialColor, mix, normalLocal, positionLocal, step, textureLoad, uint, uvec2, vertexIndex } from 'three/tsl';
 import { Instances, instanced } from '../render/instances.ts';
 import { type Pose, type V3, posedFigures } from '../vehicle/rider.ts';
+import { shout } from '../hud/shouts.ts';
 
 /** A walk cycle in this many frozen frames; each walker is drawn in whichever frame its stride has reached. One more, after them, is standing. */
 const FRAMES = 16;
@@ -73,6 +74,13 @@ export interface Walker {
   hurry: number;
   vy: number;
   y: number;
+  /** seconds until they will say anything to the player again */
+  quiet: number;
+  /** seconds until they turn on the driver who nearly ran them down; 0 if nobody did */
+  grudge: number;
+  /** where they stood at the start of the frame, for sweeping the way they went for walls */
+  ox: number;
+  oz: number;
 }
 
 /** body radius, metres: two people closer than twice this are touching */
@@ -109,6 +117,33 @@ export function walkPose(k: number, stride = 1): Pose {
     LeftArm: la, LeftForeArm: lf, RightArm: [-ra[0], ra[1], ra[2]], RightForeArm: [-rf[0], rf[1], rf[2]],
   };
 }
+
+/** Frame k of `of` of a run: a long stride, the heel coming up behind, elbows bent and pumping. */
+export function runPose(k: number, of: number): Pose {
+  const a = (k / of) * Math.PI * 2;
+  const leg = (phase: number): [V3, V3] => {
+    const swing = Math.sin(phase) * 0.8 + 0.15, bend = Math.max(0, Math.sin(phase + 1.3)) * 1.5 + 0.25;
+    return [[0.04, -Math.cos(swing), Math.sin(swing)], [0, -Math.cos(swing - bend), Math.sin(swing - bend)]];
+  };
+  const arm = (phase: number): [V3, V3] => {
+    const swing = -Math.sin(phase) * 0.8;
+    return [[0.14, -Math.cos(swing), Math.sin(swing)], [-0.05, -Math.cos(swing + 1.5), Math.sin(swing + 1.5)]];
+  };
+  const [lu, ll] = leg(a), [ru, rl] = leg(a + Math.PI), [la, lf] = arm(a), [ra, rf] = arm(a + Math.PI);
+  return {
+    Hips: [0, 1, 0.1], Spine: [0, 1, 0.18], Spine1: [0, 1, 0.2], Spine2: [0, 1, 0.2], Neck: [0, 1, 0.1], Head: [0, 1, -0.05],
+    LeftUpLeg: lu, LeftLeg: ll, LeftFoot: [0.03, -0.5, 1],
+    RightUpLeg: [-ru[0], ru[1], ru[2]], RightLeg: [-rl[0], rl[1], rl[2]], RightFoot: [-0.03, -0.5, 1],
+    LeftArm: la, LeftForeArm: lf, RightArm: [-ra[0], ra[1], ra[2]], RightForeArm: [-rf[0], rf[1], rf[2]],
+  };
+}
+
+/** Each figure's frames: the walk (0 to FRAMES - 1), standing (STAND), then a run (RUN_FRAMES). */
+const STAND = FRAMES, RUN_FRAMES = 8, RUN = STAND + 1;
+const framePoses = (): Pose[] => [
+  ...Array.from({ length: FRAMES }, (_, k) => walkPose(k)), walkPose(0, 0),
+  ...Array.from({ length: RUN_FRAMES }, (_, k) => runPose(k, RUN_FRAMES)),
+];
 
 /**
  * A figure's material, remade as a node material that draws `Instances`. The clothes are dyed per person: the
@@ -147,10 +182,11 @@ const POSE_WIDTH = 2048;
  * its own, ten or so draws (one per material) in each of the four passes: a thousand draws, the most of any frame.
  */
 async function walkCycle(file: string, height: number, count: number, scene: THREE.Scene) {
-  const figures = await posedFigures([...Array.from({ length: FRAMES }, (_, k) => walkPose(k)), walkPose(0, 0)], file);
-  // feet on the ground (the lowest point of any frame) and brought to the height asked for
+  const figures = await posedFigures(framePoses(), file);
+  // feet on the ground (the lowest point of the walk) and brought to the height asked for; not by the gestures,
+  // whose hands over the head would have made everyone shorter
   const box = new THREE.Box3();
-  for (const f of figures) box.expandByObject(f);
+  for (const f of figures.slice(0, STAND + 1)) box.expandByObject(f);
   const fit = new THREE.Matrix4().makeScale(...(Array(3).fill(height / (box.max.y - box.min.y)) as V3)).multiply(new THREE.Matrix4().makeTranslation(0, -box.min.y, 0));
   const materials: THREE.Material[] = [];
   for (const f of figures) f.traverse((o) => (o as THREE.Mesh).isMesh && !materials.includes((o as THREE.Mesh).material as THREE.Material) && materials.push((o as THREE.Mesh).material as THREE.Material));
@@ -222,6 +258,16 @@ export class Pedestrians {
   /** asked when the player's car runs someone down at (vx, vz) m/s: true if they are taken to be thrown for real */
   onStruck?: (w: Walker, vx: number, vz: number) => boolean;
   private ready = false;
+  private clock = 0;
+  /** for sweeping each step for walls; Rapier only reads its origin and direction */
+  private ray = { origin: { x: 0, y: 0, z: 0 }, dir: { x: 0, y: 0, z: 0 } } as RAPIER.Ray;
+  /** seconds of panic left after the last shot, and where the shooting was: the whole street runs until it is over */
+  panic = 0;
+  /** whether the player is on foot (main.ts), and with a rifle in hand: then they are someone to talk to, or run from */
+  playerOnFoot = false;
+  playerArmed = false;
+  private panicX = 0;
+  private panicZ = 0;
   private started = false;
   private m = new THREE.Matrix4();
   private q = new THREE.Quaternion();
@@ -241,7 +287,7 @@ export class Pedestrians {
     for (let i = 0; i < count; i++) {
       this.walkers.push({
         on: false, side: { pts: [], width: 0 }, seg: 0, decide: 0, tx: 0, tz: 0, hurry: 0, t: 0, dir: 1, speed: 1.3, lane: 0, x: 0, z: 0, vx: 0, vz: 0, yaw: 0, phase: 0, scale: 1, figure: 0, top: new THREE.Color(1, 1, 1), bottom: new THREE.Color(1, 1, 1),
-        state: 'walk', timer: 0, vy: 0, y: 0, nerve: 0.5,
+        state: 'walk', timer: 0, vy: 0, y: 0, nerve: 0.5, quiet: 0, grudge: 0, ox: 0, oz: 0,
       });
     }
     if (!count) return;
@@ -340,7 +386,7 @@ export class Pedestrians {
     Object.assign(w, {
       on: true, side, seg: at.seg, t: at.t, dir, speed, lane, x, z, vx: at.fx * speed, vz: at.fz * speed, yaw: Math.atan2(at.fx, at.fz),
       phase: Math.random(), scale: 0.95 + Math.random() * 0.1, figure: Math.floor(Math.random() * this.frames.length), top: pick(TOPS), bottom: pick(BOTTOMS), state: 'walk', timer: 0, y: 0, vy: 0,
-      decide: 3 + Math.random() * 15, hurry: 0, nerve: Math.random(),
+      decide: 3 + Math.random() * 15, hurry: 0, nerve: Math.random(), quiet: 0, grudge: 0, ox: x, oz: z,
     });
   }
 
@@ -362,6 +408,10 @@ export class Pedestrians {
       return;
     }
     Object.assign(w, { state: 'walk', side: best, seg: Math.min(seg, best.pts.length / 2 - 2), t: 0, dir: Math.random() < 0.5 ? 1 : -1, decide: 8 + Math.random() * 12, hurry: 0, y: 0, vy: 0 });
+  }
+
+  isWoman(w: Walker) {
+    return this.kinds[w.figure]?.[0].includes('woman') ?? false;
   }
 
   /** The figure file `w` is drawn from, and how tall they stand. */
@@ -426,9 +476,37 @@ export class Pedestrians {
       if (d > r) continue;
       if (w.nerve > 0.85 && join(w)) continue;
       if (w.nerve < 0.45 || d < 2.5) ran.push(Object.assign(w, { state: 'flee', tx: x, tz: z, timer: 5 + Math.random() * 5 }));
-      else if (w.state === 'walk' || w.state === 'idle') Object.assign(w, { state: 'idle', timer: 4 + Math.random() * 5, vx: 0, vz: 0, yaw: Math.atan2(x - w.x, z - w.z) });
+      else if (w.state === 'walk' || w.state === 'idle') {
+        // they stop to watch, and egg it on
+        Object.assign(w, { state: 'idle', timer: 4 + Math.random() * 5, vx: 0, vz: 0, yaw: Math.atan2(x - w.x, z - w.z) });
+        shout(w, this.isWoman(w), 'gawk', 0.35);
+      }
     }
     return ran;
+  }
+
+  /**
+   * Gunfire at (x, z): no gawking, no joining in. Everyone in sight runs, and keeps running in a blind scatter,
+   * newcomers too, until a minute after the last shot. Returns those who only now started to run.
+   */
+  gunfire(x: number, z: number) {
+    Object.assign(this, { panic: 60, panicX: x, panicZ: z });
+    const ran: Walker[] = [];
+    for (const w of this.walkers) {
+      if (!w.on || w.state === 'taken' || w.state === 'down') continue;
+      if (w.state !== 'flee') ran.push(w);
+      Object.assign(w, { state: 'flee', tx: x, tz: z, timer: 2 + Math.random() * 3 });
+    }
+    return ran;
+  }
+
+  /** Someone still running from the shooting within `r` metres of (x, z), picked at random: for a scream heard and seen. */
+  panicking(x: number, z: number, r = 30) {
+    for (let k = 0; k < 8; k++) {
+      const w = this.walkers[Math.floor(Math.random() * this.walkers.length)];
+      if (w?.on && w.state === 'flee' && Math.hypot(w.x - x, w.z - z) < r) return w;
+    }
+    return null;
   }
 
   private segLength(side: Side, seg: number) {
@@ -471,7 +549,10 @@ export class Pedestrians {
     dt = Math.min(dt, 0.05);
     const speed = Math.hypot(vx, vz), cfx = vx / (speed || 1), cfz = vz / (speed || 1);
     let hit = 0;
+    this.panic = Math.max(0, this.panic - dt);
+    this.clock += dt;
     const live = this.walkers.filter((w) => w.on && w.state !== 'taken');
+    for (const w of live) [w.ox, w.oz] = [w.x, w.z];
     for (const w of this.walkers) {
       if (w.state === 'taken' && w.on) continue;
       if (!w.on) {
@@ -494,10 +575,17 @@ export class Pedestrians {
           w.vx *= Math.max(0, 1 - 4 * dt);
           w.vz *= Math.max(0, 1 - 4 * dt);
         }
-        if (w.timer <= 0) Object.assign(w, { state: 'walk', y: 0, vx: 0, vz: 0 });
+        if (w.timer <= 0) {
+          // up again, and furious with whoever did it
+          Object.assign(w, { state: 'idle', timer: 2.5, y: 0, vx: 0, vz: 0, yaw: Math.atan2(ox - w.x, oz - w.z) });
+          shout(w, this.isWoman(w), 'angry');
+        }
         continue;
       }
 
+      if (this.panic > 0 && w.state !== 'flee' && Math.hypot(w.x - this.panicX, w.z - this.panicZ) < DRAWN + 60) {
+        Object.assign(w, { state: 'flee', tx: this.panicX, tz: this.panicZ, timer: 2 + Math.random() * 3 });
+      }
       if (w.state === 'flee') {
         const struck = this.struck(w, px, pz, vx, vz);
         if (struck) {
@@ -526,10 +614,41 @@ export class Pedestrians {
         w.yaw += Math.max(-8 * dt, Math.min(8 * dt, turn));
         w.phase = (w.phase + (pace * dt) / (STRIDE * 1.7)) % 1;
         // far enough, or long enough: back to the nearest pavement and on with the day
-        if ((w.timer -= dt) <= 0 || d > 45) this.attach(w);
+        if ((w.timer -= dt) > 0 && d < 45) continue;
+        if (this.panic <= 0) this.attach(w);
+        else {
+          // still panicking: off again a few seconds, roughly away from the shooting but never in a straight line
+          const away = Math.atan2(w.x - this.panicX, w.z - this.panicZ) + (Math.random() - 0.5) * 2.4;
+          Object.assign(w, { tx: w.x - Math.sin(away) * 5, tz: w.z - Math.cos(away) * 5, timer: 2 + Math.random() * 4 });
+        }
         continue;
       }
 
+      // nearly run down: once the car is past, they round on it, swearing
+      if (w.grudge > 0 && (w.grudge -= dt) <= 0) {
+        Object.assign(w, { state: 'idle', timer: 2 + Math.random() * 1.5, vx: 0, vz: 0, yaw: Math.atan2(px - w.x, pz - w.z) });
+        shout(w, this.isWoman(w), 'angry', 0.8);
+      }
+      // the player on foot, close by: walked into, they swear at him; walked past, now and then a remark; and a
+      // rifle in his hands, they back off from him
+      w.quiet -= dt;
+      const near = this.playerOnFoot && w.quiet <= 0 ? Math.hypot(w.x - ox, w.z - oz) : Infinity;
+      if (near < 2.5) {
+        w.quiet = 15 + Math.random() * 20;
+        const toPlayer = Math.atan2(ox - w.x, oz - w.z);
+        if (this.playerArmed) {
+          Object.assign(w, { state: 'flee', tx: ox, tz: oz, timer: 2.5 + Math.random() * 2 });
+          shout(w, this.isWoman(w), 'armed', 0.7);
+          continue;
+        }
+        if (near < 0.75) {
+          Object.assign(w, { state: 'idle', timer: 1.5 + Math.random(), vx: 0, vz: 0, yaw: toPlayer });
+          shout(w, this.isWoman(w), 'bump');
+        } else if (Math.random() < 0.35) {
+          if (w.state === 'idle') w.yaw = toPlayer;
+          shout(w, this.isWoman(w), 'passby');
+        }
+      }
       // Now and then they make up their minds: stop a while, or cross over to the other side.
       w.hurry -= dt;
       if (w.state === 'walk' && (w.decide -= dt) <= 0) {
@@ -651,6 +770,7 @@ export class Pedestrians {
         continue;
       }
       if (speed > 3 && ahead > 0 && ahead < speed * 1.5 + 4 && Math.abs(across) < 2.4) {
+        if (w.grudge <= 0) w.grudge = 0.9;
         const away = across >= 0 ? 1 : -1;
         fx += cfz * away * 14;
         fz += -cfx * away * 14;
@@ -694,6 +814,12 @@ export class Pedestrians {
       }
     }
 
+    // Nothing takes anyone through a wall: whatever moved them this frame (their own feet, a car, the crowd's
+    // shoving), the way from where they stood to where they are now is swept, stopping a body's width short of
+    // anything solid and sliding along it. The walls are thin shells, not solids: once through one, someone was
+    // inside a building for good, and the push off the nearest wall then held them in.
+    for (const w of live) this.sweep(w);
+
     this.positions.length = 0;
     for (const w of live) if (w.on && (w.state === 'walk' || w.state === 'cross' || w.state === 'flee')) this.positions.push({ x: w.x, z: w.z });
     this.started = true;
@@ -701,11 +827,40 @@ export class Pedestrians {
     return hit;
   }
 
+  private sweep(w: Walker) {
+    const dx = w.x - w.ox, dz = w.z - w.oz, len = Math.hypot(dx, dz);
+    if (len < 1e-4) return;
+    const ux = dx / len, uz = dz / len;
+    const hit = this.cast(w.ox, w.oz, ux, uz, len + RADIUS);
+    if (!hit) return;
+    let nx = hit.normal.x, nz = hit.normal.z;
+    const nl = Math.hypot(nx, nz) || 1;
+    [nx, nz] = [nx / nl, nz / nl];
+    const go = Math.max(0, hit.timeOfImpact - RADIUS), into = ux * nx + uz * nz;
+    w.x = w.ox + ux * go;
+    w.z = w.oz + uz * go;
+    // what is left of the step goes along the wall, if that way is clear too
+    const rest = len - go, sx = (ux - into * nx) * rest, sz = (uz - into * nz) * rest, sl = Math.hypot(sx, sz);
+    if (sl > 1e-4 && !this.cast(w.x, w.z, sx / sl, sz / sl, sl + RADIUS)) [w.x, w.z] = [w.x + sx, w.z + sz];
+    // and no speed left going into it
+    const vin = w.vx * nx + w.vz * nz;
+    if (vin < 0) [w.vx, w.vz] = [w.vx - vin * nx, w.vz - vin * nz];
+  }
+
+  private cast(x: number, z: number, dx: number, dz: number, reach: number) {
+    this.ray.origin = { x, y: 0.9, z };
+    this.ray.dir = { x: dx, y: 0, z: dz };
+    return this.world.castRayAndGetNormal(this.ray, reach, true, undefined, QUERY_GROUPS);
+  }
+
   private draw(px: number, pz: number) {
     const counts = this.frames.map(() => 0);
     for (const w of this.walkers) {
       if (!w.on || w.state === 'taken' || Math.hypot(w.x - px, w.z - pz) > DRAWN) continue;
-      const f = w.state === 'down' ? 0 : w.state === 'idle' || w.state === 'wait' ? FRAMES : Math.floor(w.phase * FRAMES) % FRAMES;
+      const f = w.state === 'down' ? 0
+        : w.state === 'idle' || w.state === 'wait' ? STAND
+        : w.state === 'flee' ? RUN + (Math.floor(w.phase * RUN_FRAMES) % RUN_FRAMES)
+        : Math.floor(w.phase * FRAMES) % FRAMES;
       const mesh = this.frames[w.figure], i = counts[w.figure]++;
       mesh.geometry.attributes.iframe.setX(i, f);
       this.q.setFromAxisAngle(this.up, w.yaw);
